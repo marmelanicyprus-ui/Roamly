@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'data.dart';
+import 'sync/nearby_sync.dart';
 
 enum TrafficMode { normal, economy, essential, roaming }
 
@@ -15,8 +16,11 @@ extension TrafficModeX on TrafficMode {
 
 /// Глобальные настройки и доступ к хранилищу.
 class AppState extends ChangeNotifier {
-  AppState(this.repo);
+  AppState(this.repo) : sync = NearbySync(repo);
   final Repo repo;
+
+  /// Автоматический обмен с телефонами группы рядом.
+  final NearbySync sync;
 
   String myName = '';
   ThemeMode themeMode = ThemeMode.system;
@@ -32,6 +36,7 @@ class AppState extends ChangeNotifier {
     myName = v.trim();
     await repo.setSetting('my_name', myName);
     notifyListeners();
+    if (myName.isNotEmpty) sync.start();
   }
 
   Future<void> setTheme(ThemeMode m) async {

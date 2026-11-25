@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../app_state.dart';
 import '../data.dart';
 import '../money.dart';
+import '../sync/sync_badge.dart';
 import '../theme.dart';
 import 'add_expense.dart';
 import 'home.dart' show dateRange;
@@ -75,6 +76,7 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
                 Text(b.trip.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
                 Text('${dateRange(b.trip.start, b.trip.end)} · ${b.members.length} участников',
                     style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+                SyncBadge(tripId: b.trip.id),
               ]),
             ),
           ]),

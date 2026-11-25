@@ -123,14 +123,17 @@ class _JoinScreenState extends State<JoinScreen> {
     final p = widget.payload;
     final members = [for (final m in p.members) Member(id: m.id, tripId: m.tripId, name: m.name, isChild: m.isChild, walletId: m.walletId)];
     final wallets = [...p.wallets];
+    Wallet? newWallet;
+    Member? newMember;
     if (_picked != null) {
       members.firstWhere((m) => m.id == _picked).isMe = true;
     } else {
-      final w = Wallet(id: newId(), tripId: p.trip.id, name: 'Кошелёк: ${s.myName}');
-      wallets.add(w);
-      members.add(Member(id: newId(), tripId: p.trip.id, name: s.myName, isChild: p.asChild, walletId: w.id, isMe: true));
+      newWallet = Wallet(id: newId(), tripId: p.trip.id, name: 'Кошелёк: ${s.myName}');
+      newMember = Member(id: newId(), tripId: p.trip.id, name: s.myName, isChild: p.asChild, walletId: newWallet.id, isMe: true);
+      wallets.add(newWallet);
+      members.add(newMember);
     }
-    await s.repo.joinTrip(p.trip, wallets, members, s.myName);
+    await s.repo.joinTrip(p.trip, wallets, members, s.myName, newWallet: newWallet, newMember: newMember);
     if (!mounted) return;
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => TripScreen(tripId: p.trip.id)));
   }
@@ -194,7 +197,7 @@ class _JoinScreenState extends State<JoinScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              'Сейчас поездка копируется на ваш телефон. Обмен сообщениями и тратами между телефонами появится в следующей сборке.',
+              'Поездка копируется на ваш телефон. Дальше чат, траты и план сами обмениваются с телефонами группы, когда они рядом.',
               style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
             ),
           ],

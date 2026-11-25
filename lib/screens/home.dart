@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 
 import '../app_state.dart';
 import '../data.dart';
+import '../sync/sync_badge.dart';
 import '../theme.dart';
 import 'create_trip.dart';
 import 'join.dart';
@@ -83,12 +84,7 @@ class _HomeScreenState extends State<HomeScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('Roamly offline', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20)),
-            Row(children: [
-              Container(width: 8, height: 8, decoration: BoxDecoration(color: cs.primary, shape: BoxShape.circle)),
-              const SizedBox(width: 6),
-              Text('Только этот телефон · ${s.traffic.label}',
-                  style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
-            ]),
+            SyncBadge(suffix: ' · ${s.traffic.label}'),
           ],
         ),
         actions: [
@@ -351,7 +347,7 @@ class _Menu extends StatelessWidget {
           const Divider(height: 24),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            child: Text('Roamly offline 0.1.2 · данные хранятся только на этом телефоне',
+            child: Text('Roamly offline 0.2.0 · данные хранятся на телефонах группы',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
           ),
         ],

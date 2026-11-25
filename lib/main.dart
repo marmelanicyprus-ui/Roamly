@@ -37,6 +37,11 @@ class _RoamlyAppState extends State<RoamlyApp> {
   @override
   void initState() {
     super.initState();
+    // Связь рядом запускаем после первого кадра: системе нужен экран для запроса разрешений.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final s = App.read(context);
+      if (s.myName.isNotEmpty) s.sync.start();
+    });
     // Ссылка roamly://join?... из камеры телефона или мессенджера открывает экран присоединения.
     _links = AppLinks().uriLinkStream.listen((uri) {
       final p = parseInvite(uri.toString());
