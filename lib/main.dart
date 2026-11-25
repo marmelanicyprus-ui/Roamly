@@ -1,12 +1,19 @@
+import 'dart:async';
+
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app_state.dart';
 import 'data.dart';
+import 'invite_code.dart';
 import 'screens/home.dart';
+import 'screens/join.dart';
 import 'screens/onboarding.dart';
 import 'theme.dart';
+
+final navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,13 +24,51 @@ Future<void> main() async {
   runApp(App(state: state, child: const RoamlyApp()));
 }
 
-class RoamlyApp extends StatelessWidget {
+class RoamlyApp extends StatefulWidget {
   const RoamlyApp({super.key});
+  @override
+  State<RoamlyApp> createState() => _RoamlyAppState();
+}
+
+class _RoamlyAppState extends State<RoamlyApp> {
+  StreamSubscription<Uri>? _links;
+  InvitePayload? _pending; // ссылка пришла до ввода имени
+
+  @override
+  void initState() {
+    super.initState();
+    // Ссылка roamly://join?... из камеры телефона или мессенджера открывает экран присоединения.
+    _links = AppLinks().uriLinkStream.listen((uri) {
+      final p = parseInvite(uri.toString());
+      if (p == null) return;
+      _pending = p;
+      _openPending();
+    });
+  }
+
+  void _openPending() {
+    final p = _pending;
+    if (p == null) return;
+    final s = App.read(context);
+    if (s.myName.isEmpty) return; // откроем после онбординга
+    _pending = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      navigatorKey.currentState?.push(MaterialPageRoute(builder: (_) => JoinScreen(payload: p)));
+    });
+  }
+
+  @override
+  void dispose() {
+    _links?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final s = App.of(context);
+    if (s.myName.isNotEmpty && _pending != null) _openPending();
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Roamly offline',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),

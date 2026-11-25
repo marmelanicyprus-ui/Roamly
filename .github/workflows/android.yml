@@ -33,6 +33,11 @@ jobs:
           fi
           # App name on the phone
           sed -i 's/android:label="[^"]*"/android:label="Roamly offline"/' android/app/src/main/AndroidManifest.xml
+          # Deep link roamly://join — opens the app from a QR scanned by the phone camera
+          M=android/app/src/main/AndroidManifest.xml
+          if ! grep -q 'android:scheme="roamly"' $M; then
+            sed -i 's#</activity>#    <meta-data android:name="flutter_deeplinking_enabled" android:value="false"/>\n            <intent-filter>\n                <action android:name="android.intent.action.VIEW"/>\n                <category android:name="android.intent.category.DEFAULT"/>\n                <category android:name="android.intent.category.BROWSABLE"/>\n                <data android:scheme="roamly" android:host="join"/>\n            </intent-filter>\n        </activity>#' $M
+          fi
           # Allow opening the phone dialer (SOS 112)
           if ! grep -q 'android.intent.action.DIAL' android/app/src/main/AndroidManifest.xml; then
             sed -i 's#<queries>#<queries>\n        <intent><action android:name="android.intent.action.DIAL"/><data android:scheme="tel"/></intent>#' android/app/src/main/AndroidManifest.xml
@@ -42,6 +47,19 @@ jobs:
 
       - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Signing key (stable, so new versions install over old ones)
+        run: |
+          if [ ! -f ci/debug.keystore ]; then
+            mkdir -p ci
+            keytool -genkeypair -keystore ci/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Roamly Test,O=Roamly offline,C=CY"
+            git config user.name "roamly-ci"
+            git config user.email "ci@users.noreply.github.com"
+            git add -f ci/debug.keystore
+            git commit -m "CI: тестовый ключ подписи"
+            git push
+          fi
+          mkdir -p ~/.android && cp ci/debug.keystore ~/.android/debug.keystore
 
       - name: Build APK
         run: flutter build apk --release
@@ -59,5 +77,6 @@ jobs:
           VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
           TAG="v$VERSION"
           cp build/app/outputs/flutter-apk/app-release.apk "roamly-$VERSION.apk"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --title "Roamly offline $VERSION" --notes "Тестовая сборка Android"
-          gh release upload "$TAG" "roamly-$VERSION.apk" --clobber
+          cp "roamly-$VERSION.apk" roamly.apk
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --latest --title "Roamly offline $VERSION" --notes "Тестовая сборка Android. Постоянная ссылка на последнюю версию: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/roamly.apk"
+          gh release upload "$TAG" "roamly-$VERSION.apk" roamly.apk --clobber

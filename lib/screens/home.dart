@@ -5,6 +5,7 @@ import '../app_state.dart';
 import '../data.dart';
 import '../theme.dart';
 import 'create_trip.dart';
+import 'join.dart';
 import 'roaming_prep.dart';
 import 'trip.dart';
 
@@ -90,6 +91,13 @@ class _HomeScreenState extends State<HomeScreen> {
             ]),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Присоединиться по QR',
+            icon: const Icon(Icons.qr_code_scanner),
+            onPressed: _join,
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -118,7 +126,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           Expanded(
             child: _visible.isEmpty
-                ? _Empty(onCreate: _create)
+                ? _Empty(onCreate: _create, onJoin: _join)
                 : ListView.separated(
                     padding: const EdgeInsets.only(bottom: 96),
                     itemCount: _visible.length,
@@ -128,20 +136,54 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _create,
-        icon: const Icon(Icons.add),
-        label: const Text('Новая поездка'),
-      ),
+      floatingActionButton: _rows.isEmpty
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _choose,
+              icon: const Icon(Icons.add),
+              label: const Text('Поездка'),
+            ),
     );
   }
 
   void _create() => Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateTripScreen()));
+  void _join() => Navigator.push(context, MaterialPageRoute(builder: (_) => const ScanScreen()));
+
+  void _choose() {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.add_circle_outline),
+            title: const Text('Создать поездку'),
+            subtitle: const Text('Вы организатор, пригласите остальных по QR'),
+            onTap: () {
+              Navigator.pop(ctx);
+              _create();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.qr_code_scanner),
+            title: const Text('Присоединиться'),
+            subtitle: const Text('Отсканируйте QR-код организатора'),
+            onTap: () {
+              Navigator.pop(ctx);
+              _join();
+            },
+          ),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
 }
 
 class _Empty extends StatelessWidget {
-  const _Empty({required this.onCreate});
+  const _Empty({required this.onCreate, required this.onJoin});
   final VoidCallback onCreate;
+  final VoidCallback onJoin;
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -153,8 +195,22 @@ class _Empty extends StatelessWidget {
           const SizedBox(height: 12),
           const Text('Поездок пока нет', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
-          Text('Создайте первую — всё будет работать и без интернета.',
+          Text('Создайте свою или присоединитесь к поездке друзей — всё работает и без интернета.',
               textAlign: TextAlign.center, style: TextStyle(color: cs.onSurfaceVariant)),
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(minimumSize: const Size(260, 50)),
+            onPressed: onCreate,
+            icon: const Icon(Icons.add),
+            label: const Text('Создать поездку'),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(minimumSize: const Size(260, 50)),
+            onPressed: onJoin,
+            icon: const Icon(Icons.qr_code_scanner),
+            label: const Text('Присоединиться по QR'),
+          ),
         ]),
       ),
     );
@@ -295,7 +351,7 @@ class _Menu extends StatelessWidget {
           const Divider(height: 24),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            child: Text('Roamly offline 0.1 · данные хранятся только на этом телефоне',
+            child: Text('Roamly offline 0.1.1 · данные хранятся только на этом телефоне',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
           ),
         ],

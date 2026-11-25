@@ -390,6 +390,35 @@ class Repo extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<bool> hasTrip(String id) async {
+    final r = await _db.query('trips', columns: ['id'], where: 'id = ?', whereArgs: [id]);
+    return r.isNotEmpty;
+  }
+
+  /// Присоединение по приглашению: копия поездки на этом телефоне.
+  Future<void> joinTrip(Trip trip, List<Wallet> wallets, List<Member> members, String myName) async {
+    await _db.transaction((tx) async {
+      await tx.insert('trips', trip.toMap());
+      for (final w in wallets) {
+        await tx.insert('wallets', w.toMap());
+      }
+      for (final m in members) {
+        await tx.insert('members', m.toMap());
+      }
+      await tx.insert(
+        'messages',
+        Message(
+          id: newId(),
+          tripId: trip.id,
+          kind: MsgKind.system,
+          text: '$myName присоединился(ась) по QR',
+          created: DateTime.now(),
+        ).toMap(),
+      );
+    });
+    notifyListeners();
+  }
+
   Future<void> updateTrip(Trip trip) async {
     await _db.update('trips', trip.toMap(), where: 'id = ?', whereArgs: [trip.id]);
     notifyListeners();

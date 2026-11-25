@@ -1,12 +1,11 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../app_state.dart';
 import '../data.dart';
+import '../invite_code.dart';
 
-/// QR приглашения. Сканирование и передача поездки по Bluetooth — в следующей сборке.
+/// QR приглашения: ссылка roamly://join с данными поездки.
 class InviteScreen extends StatefulWidget {
   const InviteScreen({super.key, required this.tripId});
   final String tripId;
@@ -60,14 +59,14 @@ class _InviteScreenState extends State<InviteScreen> {
                       border: Border.all(color: cs.outlineVariant),
                     ),
                     child: QrImageView(
-                      data: jsonEncode({'app': 'roamly', 'v': 1, 'trip': b.trip.id, 'role': _child ? 'child' : 'member'}),
+                      data: buildInviteLink(b, asChild: _child),
                       size: 230,
                       backgroundColor: Colors.white,
                     ),
                   ),
                 ),
                 const SizedBox(height: 20),
-                Text('Покажите код новому участнику. В следующей сборке поездка будет передаваться напрямую по Bluetooth и Wi‑Fi, без интернета.',
+                Text('Новый участник открывает Roamly → «Присоединиться» и сканирует этот код. Интернет не нужен: поездка копируется прямо из кода.',
                     textAlign: TextAlign.center, style: TextStyle(color: cs.onSurfaceVariant, height: 1.4)),
                 const SizedBox(height: 24),
                 FilledButton(
