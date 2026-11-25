@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'add_expense.dart';
 import 'home.dart' show dateRange;
 import 'invite.dart';
+import 'meeting.dart';
 import 'sos.dart';
 
 /// Подписка экрана на изменения хранилища.
@@ -128,7 +129,7 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
         ),
         body: TabBarView(children: [
           ChatTab(b: b),
-          const _Soon(icon: Icons.map_outlined, title: 'Карта', text: 'Офлайн-карты, участники и точка сбора — в следующей сборке.'),
+          MapTab(b: b),
           ExpensesTab(b: b),
           const _Soon(icon: Icons.photo_library_outlined, title: 'Фото', text: 'Общий альбом и передача фото рядом — в следующей сборке.'),
           PlanTab(b: b),
@@ -208,38 +209,7 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
     ));
   }
 
-  Future<void> _setMeeting() async {
-    final place = TextEditingController(text: widget.b.trip.meetingText ?? '');
-    TimeOfDay time = TimeOfDay.now();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setD) => AlertDialog(
-          title: const Text('Точка сбора'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: place, autofocus: true, decoration: const InputDecoration(labelText: 'Где')),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.schedule),
-              label: Text('Когда: ${time.format(ctx)}'),
-              onPressed: () async {
-                final t = await showTimePicker(context: ctx, initialTime: time);
-                if (t != null) setD(() => time = t);
-              },
-            ),
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Закрепить')),
-          ],
-        ),
-      ),
-    );
-    if (ok != true || place.text.trim().isEmpty) return;
-    final hh = time.hour.toString().padLeft(2, '0');
-    final mm = time.minute.toString().padLeft(2, '0');
-    await repo.setMeeting(widget.b.trip, place.text.trim(), '$hh:$mm', widget.b.me?.id);
-  }
+  Future<void> _setMeeting() => editMeeting(context, widget.b);
 
   void _attach() {
     showModalBottomSheet(
@@ -291,7 +261,15 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
               leading: Icon(Icons.flag_outlined, color: cs.primary),
               title: Text('Точка сбора · ${t.meetingTime ?? ''}', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
               subtitle: Text(t.meetingText!),
-              trailing: IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Изменить', onPressed: _setMeeting),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                if (t.meetingLat != null)
+                  IconButton(
+                    icon: const Icon(Icons.directions),
+                    tooltip: 'Маршрут',
+                    onPressed: () => openInMaps(t.meetingLat!, t.meetingLng!, t.meetingText!),
+                  ),
+                IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Изменить', onPressed: _setMeeting),
+              ]),
             ),
           ),
         Expanded(

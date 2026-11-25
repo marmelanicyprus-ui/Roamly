@@ -29,6 +29,8 @@ class Trip {
   bool archived;
   String? meetingText;
   String? meetingTime;
+  double? meetingLat;
+  double? meetingLng;
   final DateTime created;
 
   Trip({
@@ -42,6 +44,8 @@ class Trip {
     this.archived = false,
     this.meetingText,
     this.meetingTime,
+    this.meetingLat,
+    this.meetingLng,
     required this.created,
   });
 
@@ -56,6 +60,8 @@ class Trip {
         'archived': archived ? 1 : 0,
         'meeting_text': meetingText,
         'meeting_time': meetingTime,
+        'meeting_lat': meetingLat,
+        'meeting_lng': meetingLng,
         'created': created.millisecondsSinceEpoch,
       };
 
@@ -70,6 +76,8 @@ class Trip {
         archived: (m['archived'] as int) == 1,
         meetingText: m['meeting_text'] as String?,
         meetingTime: m['meeting_time'] as String?,
+        meetingLat: (m['meeting_lat'] as num?)?.toDouble(),
+        meetingLng: (m['meeting_lng'] as num?)?.toDouble(),
         created: DateTime.fromMillisecondsSinceEpoch(m['created'] as int),
       );
 
@@ -316,12 +324,18 @@ class Repo extends ChangeNotifier {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       p.join(dir, 'roamly.db'),
-      version: 1,
+      version: 2,
+      onUpgrade: (db, from, to) async {
+        if (from < 2) {
+          await db.execute('ALTER TABLE trips ADD COLUMN meeting_lat REAL');
+          await db.execute('ALTER TABLE trips ADD COLUMN meeting_lng REAL');
+        }
+      },
       onCreate: (db, v) async {
         await db.execute('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
         await db.execute('''CREATE TABLE trips (id TEXT PRIMARY KEY, name TEXT, type INTEGER,
           start_ms INTEGER, end_ms INTEGER, currency TEXT, child_percent INTEGER, archived INTEGER,
-          meeting_text TEXT, meeting_time TEXT, created INTEGER)''');
+          meeting_text TEXT, meeting_time TEXT, created INTEGER, meeting_lat REAL, meeting_lng REAL)''');
         await db.execute('CREATE TABLE wallets (id TEXT PRIMARY KEY, trip_id TEXT, name TEXT)');
         await db.execute('''CREATE TABLE members (id TEXT PRIMARY KEY, trip_id TEXT, name TEXT,
           is_child INTEGER, wallet_id TEXT, is_me INTEGER)''');
@@ -455,9 +469,11 @@ class Repo extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setMeeting(Trip trip, String text, String time, String? authorId) async {
+  Future<void> setMeeting(Trip trip, String text, String time, String? authorId, {double? lat, double? lng}) async {
     trip.meetingText = text;
     trip.meetingTime = time;
+    trip.meetingLat = lat;
+    trip.meetingLng = lng;
     await _db.update('trips', trip.toMap(), where: 'id = ?', whereArgs: [trip.id]);
     await _db.insert(
       'messages',
@@ -466,7 +482,7 @@ class Repo extends ChangeNotifier {
         tripId: trip.id,
         authorId: authorId,
         kind: MsgKind.meeting,
-        text: '$text · $time',
+        text: '$text · $time${lat != null ? ' · на карте' : ''}',
         created: DateTime.now(),
       ).toMap(),
     );

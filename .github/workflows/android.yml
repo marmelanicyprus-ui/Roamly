@@ -38,6 +38,10 @@ jobs:
           if ! grep -q 'android:scheme="roamly"' $M; then
             sed -i 's#</activity>#    <meta-data android:name="flutter_deeplinking_enabled" android:value="false"/>\n            <intent-filter>\n                <action android:name="android.intent.action.VIEW"/>\n                <category android:name="android.intent.category.DEFAULT"/>\n                <category android:name="android.intent.category.BROWSABLE"/>\n                <data android:scheme="roamly" android:host="join"/>\n            </intent-filter>\n        </activity>#' $M
           fi
+          # Internet (map tiles) and location permissions
+          if ! grep -q 'ACCESS_FINE_LOCATION' $M; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n    <application#' $M
+          fi
           # Allow opening the phone dialer (SOS 112)
           if ! grep -q 'android.intent.action.DIAL' android/app/src/main/AndroidManifest.xml; then
             sed -i 's#<queries>#<queries>\n        <intent><action android:name="android.intent.action.DIAL"/><data android:scheme="tel"/></intent>#' android/app/src/main/AndroidManifest.xml

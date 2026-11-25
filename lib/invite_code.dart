@@ -23,6 +23,7 @@ String buildInviteLink(TripBundle b, {bool asChild = false}) {
     't': [t.id, t.name, t.type.index, t.start.millisecondsSinceEpoch, t.end.millisecondsSinceEpoch, t.currency, t.childPercent],
     'w': [for (final w in b.wallets) [w.id, w.name]],
     'm': [for (final m in b.members) [m.id, m.name, m.isChild ? 1 : 0, walletIdx[m.walletId] ?? 0]],
+    if (t.meetingText != null) 'p': [t.meetingText, t.meetingTime, t.meetingLat, t.meetingLng],
   };
   final d = base64Url.encode(utf8.encode(jsonEncode(data))).replaceAll('=', '');
   return '$inviteScheme://join?d=$d';
@@ -51,6 +52,13 @@ InvitePayload? parseInvite(String raw) {
       childPercent: t[6] as int,
       created: DateTime.now(),
     );
+    final p = j['p'] as List?;
+    if (p != null) {
+      trip.meetingText = p[0] as String?;
+      trip.meetingTime = p[1] as String?;
+      trip.meetingLat = (p[2] as num?)?.toDouble();
+      trip.meetingLng = (p[3] as num?)?.toDouble();
+    }
     final wallets = [
       for (final w in j['w'] as List) Wallet(id: (w as List)[0] as String, tripId: trip.id, name: w[1] as String),
     ];
