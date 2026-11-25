@@ -100,6 +100,7 @@ function onMessage(ws, raw) {
       const list = Array.isArray(m.e) ? m.e.slice(0, 500) : [];
       const ids = [];
       const fresh = new Map(); // trip → [{s,b}]
+      const calls = new Set(); // поездки, где начался звонок
       for (const e of list) {
         if (!e || !HASH_RE.test(e.t) || typeof e.id !== 'string' || e.id.length > 64) continue;
         if (typeof e.b !== 'string' || e.b.length > MAX_BLOB) continue;
@@ -108,12 +109,13 @@ function onMessage(ws, raw) {
         if (r.changes > 0) {
           if (!fresh.has(e.t)) fresh.set(e.t, []);
           fresh.get(e.t).push({ s: Number(r.lastInsertRowid), b: e.b });
+          if (e.n === 'call') calls.add(e.t);
         }
       }
       send(ws, { k: 'ack', ids });
       for (const [t, rows] of fresh) {
         for (const other of rooms.get(t) ?? []) if (other !== ws) send(other, { k: 'ev', t, e: rows });
-        notifyOffline(t, ws.dev);
+        notifyOffline(t, ws.dev, calls.has(t));
       }
       return;
     }
@@ -162,20 +164,29 @@ async function fcmAccessToken() {
 }
 
 const lastPush = new Map(); // dev → ms, не чаще раза в 20 с
-async function notifyOffline(trip, fromDev) {
+async function notifyOffline(trip, fromDev, isCall = false) {
   if (!fcm) return;
   const rows = q.tokensFor.all(trip);
   for (const { dev, token } of rows) {
     if (dev === fromDev || online.has(dev)) continue;
     const now = Date.now();
-    if (now - (lastPush.get(dev) || 0) < 20000) continue;
+    if (!isCall && now - (lastPush.get(dev) || 0) < 20000) continue;
     lastPush.set(dev, now);
+    const message = {
+      token,
+      notification: isCall
+        ? { title: 'Roamly offline: входящий звонок', body: 'Вам звонят из поездки — откройте приложение' }
+        : { title: 'Roamly offline', body: 'Новое в поездке' },
+      data: { t: trip, call: isCall ? '1' : '0' },
+      android: { priority: 'high', collapse_key: trip, notification: { tag: isCall ? `call-${trip}` : trip } },
+    };
     try {
       const r = await fetch(`https://fcm.googleapis.com/v1/projects/${fcm.project_id}/messages:send`, {
         method: 'POST',
         headers: { authorization: `Bearer ${await fcmAccessToken()}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ message: { token, data: { t: trip }, android: { priority: 'high' } } }),
+        body: JSON.stringify({ message }),
       });
+      if (!r.ok) console.log('push:', r.status, (await r.text()).slice(0, 200));
       if (r.status === 404 || r.status === 400) q.dropToken.run(token);
     } catch (e) {
       console.log('push: ошибка', e.message);

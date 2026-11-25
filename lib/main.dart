@@ -9,6 +9,7 @@ import 'app_state.dart';
 import 'calls/call_screen.dart';
 import 'data.dart';
 import 'invite_code.dart';
+import 'sync/push.dart';
 import 'screens/home.dart';
 import 'screens/join.dart';
 import 'screens/onboarding.dart';
@@ -44,6 +45,10 @@ class _RoamlyAppState extends State<RoamlyApp> with WidgetsBindingObserver {
       final s = App.read(context);
       s.startSync();
       s.calls.incoming.addListener(_showIncoming);
+      Push.init(onMessage: s.server.poke).then((token) {
+        if (token != null) s.server.setPushToken(token);
+      });
+      Push.onTokenRefresh(s.server.setPushToken);
     });
     // Ссылка roamly://join?... из камеры телефона или мессенджера открывает экран присоединения.
     _links = AppLinks().uriLinkStream.listen((uri) {

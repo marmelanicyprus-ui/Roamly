@@ -41,6 +41,13 @@ class ServerSync extends ChangeNotifier {
 
   ServerState state = ServerState.off;
   DateTime? lastSync;
+  String? _pushToken;
+
+  /// Push-токен FCM этого телефона: сервер будит по нему, когда приложение закрыто.
+  void setPushToken(String token) {
+    _pushToken = token;
+    if (state == ServerState.online) _send({'k': 'push', 'token': token});
+  }
 
   String get label => switch (state) {
         ServerState.off => 'Интернет выключен (роуминг)',
@@ -87,6 +94,7 @@ class ServerSync extends ChangeNotifier {
       _attempt = 0;
       _set(ServerState.online);
       _send({'k': 'hello', 'dev': repo.deviceId, 'v': 1});
+      if (_pushToken != null) _send({'k': 'push', 'token': _pushToken});
       await _subscribe();
       _scheduleFlush();
     } catch (e) {
@@ -182,7 +190,13 @@ class ServerSync extends ChangeNotifier {
       if (list.isEmpty) return;
       final out = <Map<String, Object?>>[];
       for (final e in list) {
-        out.add({'t': NearbySync.tripHash(e.tripId), 'id': e.id, 'b': await _encrypt(e)});
+        out.add({
+          't': NearbySync.tripHash(e.tripId),
+          'id': e.id,
+          'b': await _encrypt(e),
+          // подсказка серверу для push «входящий звонок» (сам звонок зашифрован)
+          if (e.type == 'call') 'n': 'call',
+        });
         _inFlight.add(e.id);
       }
       _send({'k': 'put', 'e': out});

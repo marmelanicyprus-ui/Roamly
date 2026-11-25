@@ -1,7 +1,7 @@
 name: roamly
 description: Roamly offline — приложение для поездок компаний и гидов, работает без интернета.
 publish_to: 'none'
-version: 0.4.0+5
+version: 0.4.1+6
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -29,6 +29,8 @@ dependencies:
   web_socket_channel: '>=2.4.0 <4.0.0'
   http: any
   livekit_client: ^2.4.0
+  firebase_core: any
+  firebase_messaging: any
 
 dev_dependencies:
   flutter_test:
