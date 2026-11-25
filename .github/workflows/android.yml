@@ -49,17 +49,16 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Signing key (stable, so new versions install over old ones)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ ! -f ci/debug.keystore ]; then
-            mkdir -p ci
+          # Тестовый ключ хранится в служебном релизе signing-key; создаётся один раз
+          mkdir -p ~/.android ci
+          if ! gh release download signing-key -p debug.keystore -D ci 2>/dev/null; then
             keytool -genkeypair -keystore ci/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Roamly Test,O=Roamly offline,C=CY"
-            git config user.name "roamly-ci"
-            git config user.email "ci@users.noreply.github.com"
-            git add -f ci/debug.keystore
-            git commit -m "CI: тестовый ключ подписи"
-            git push
+            gh release create signing-key --prerelease --title "CI: тестовый ключ подписи" --notes "Служебный релиз для тестовых сборок. Не устанавливать." ci/debug.keystore
           fi
-          mkdir -p ~/.android && cp ci/debug.keystore ~/.android/debug.keystore
+          cp ci/debug.keystore ~/.android/debug.keystore
 
       - name: Build APK
         run: flutter build apk --release
