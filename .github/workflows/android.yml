@@ -54,6 +54,8 @@ jobs:
           fi
           # Уведомления (Android 13+)
           grep -q 'POST_NOTIFICATIONS' $M || sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application#' $M
+          # Lint падает внутри себя (баг lint с плагинами Firebase/WebRTC) — в release-сборке его не запускаем
+          grep -q 'checkReleaseBuilds' android/app/build.gradle.kts 2>/dev/null || printf '\nandroid {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n}\n' >> android/app/build.gradle.kts
           # WebRTC требует Android 7+ (minSdk 24)
           G=android/app/build.gradle.kts
           [ -f $G ] && sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' $G
