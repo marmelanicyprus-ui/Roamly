@@ -56,7 +56,7 @@ jobs:
           mkdir -p ~/.android ci
           if ! gh release download signing-key -p debug.keystore -D ci 2>/dev/null; then
             keytool -genkeypair -keystore ci/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Roamly Test,O=Roamly offline,C=CY"
-            gh release create signing-key --prerelease --title "CI: тестовый ключ подписи" --notes "Служебный релиз для тестовых сборок. Не устанавливать." ci/debug.keystore
+            gh release upload signing-key ci/debug.keystore --clobber
           fi
           cp ci/debug.keystore ~/.android/debug.keystore
 
@@ -77,5 +77,5 @@ jobs:
           TAG="v$VERSION"
           cp build/app/outputs/flutter-apk/app-release.apk "roamly-$VERSION.apk"
           cp "roamly-$VERSION.apk" roamly.apk
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --latest --title "Roamly offline $VERSION" --notes "Тестовая сборка Android. Постоянная ссылка на последнюю версию: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/roamly.apk"
-          gh release upload "$TAG" "roamly-$VERSION.apk" roamly.apk --clobber
+          # Релиз android создан заранее: https://github.com/$GITHUB_REPOSITORY/releases/download/android/roamly.apk
+          gh release upload android "roamly-$VERSION.apk" roamly.apk --clobber
