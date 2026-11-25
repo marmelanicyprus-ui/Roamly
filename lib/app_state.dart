@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'calls/call_service.dart';
 import 'data.dart';
 import 'sync/nearby_sync.dart';
+import 'sync/server_sync.dart';
 
 enum TrafficMode { normal, economy, essential, roaming }
 
@@ -16,11 +18,27 @@ extension TrafficModeX on TrafficMode {
 
 /// Глобальные настройки и доступ к хранилищу.
 class AppState extends ChangeNotifier {
-  AppState(this.repo) : sync = NearbySync(repo);
+  AppState(this.repo)
+      : sync = NearbySync(repo),
+        server = ServerSync(repo),
+        calls = CallService(repo);
   final Repo repo;
 
   /// Автоматический обмен с телефонами группы рядом.
   final NearbySync sync;
+
+  /// Обмен через сервер-«почту», когда телефоны не рядом.
+  final ServerSync server;
+
+  /// Звонки (LiveKit).
+  final CallService calls;
+
+  /// Запуск связи после ввода имени: рядом — всегда, сервер — если не режим «Роуминг».
+  void startSync() {
+    if (myName.isEmpty) return;
+    sync.start();
+    server.setEnabled(traffic != TrafficMode.roaming);
+  }
 
   String myName = '';
   ThemeMode themeMode = ThemeMode.system;
@@ -36,7 +54,7 @@ class AppState extends ChangeNotifier {
     myName = v.trim();
     await repo.setSetting('my_name', myName);
     notifyListeners();
-    if (myName.isNotEmpty) sync.start();
+    startSync();
   }
 
   Future<void> setTheme(ThemeMode m) async {
@@ -49,6 +67,7 @@ class AppState extends ChangeNotifier {
     traffic = m;
     await repo.setSetting('traffic', m.index.toString());
     notifyListeners();
+    server.setEnabled(myName.isNotEmpty && m != TrafficMode.roaming);
   }
 }
 

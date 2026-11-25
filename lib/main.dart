@@ -6,6 +6,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app_state.dart';
+import 'calls/call_screen.dart';
 import 'data.dart';
 import 'invite_code.dart';
 import 'screens/home.dart';
@@ -30,17 +31,19 @@ class RoamlyApp extends StatefulWidget {
   State<RoamlyApp> createState() => _RoamlyAppState();
 }
 
-class _RoamlyAppState extends State<RoamlyApp> {
+class _RoamlyAppState extends State<RoamlyApp> with WidgetsBindingObserver {
   StreamSubscription<Uri>? _links;
   InvitePayload? _pending; // ссылка пришла до ввода имени
 
   @override
   void initState() {
     super.initState();
-    // Связь рядом запускаем после первого кадра: системе нужен экран для запроса разрешений.
+    WidgetsBinding.instance.addObserver(this);
+    // Связь запускаем после первого кадра: системе нужен экран для запроса разрешений.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final s = App.read(context);
-      if (s.myName.isNotEmpty) s.sync.start();
+      s.startSync();
+      s.calls.incoming.addListener(_showIncoming);
     });
     // Ссылка roamly://join?... из камеры телефона или мессенджера открывает экран присоединения.
     _links = AppLinks().uriLinkStream.listen((uri) {
@@ -62,8 +65,29 @@ class _RoamlyAppState extends State<RoamlyApp> {
     });
   }
 
+  /// Вернулись в приложение — сразу забрать новое с сервера.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) App.read(context).server.poke();
+  }
+
+  Future<void> _showIncoming() async {
+    final s = App.read(context);
+    final c = s.calls.incoming.value;
+    if (c == null) return;
+    s.calls.incoming.value = null;
+    String tripName = '';
+    try {
+      tripName = (await s.repo.bundle(c.tripId)).trip.name;
+    } catch (_) {}
+    navigatorKey.currentState?.push(MaterialPageRoute(
+      builder: (_) => IncomingCallScreen(tripId: c.tripId, tripName: tripName, room: c.room, name: c.name, video: c.video),
+    ));
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _links?.cancel();
     super.dispose();
   }

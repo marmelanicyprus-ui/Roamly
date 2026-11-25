@@ -1,0 +1,11 @@
+{
+  "name": "roamly-post",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Roamly offline — сервер-«почта»: хранит и пересылает зашифрованные записи поездок, выдаёт пропуска в звонки LiveKit, шлёт push.",
+  "main": "index.mjs",
+  "scripts": { "start": "node index.mjs" },
+  "engines": { "node": ">=22.13" },
+  "dependencies": { "ws": "^8.18.0" }
+}

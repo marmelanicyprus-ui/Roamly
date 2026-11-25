@@ -33,7 +33,7 @@ class Peer {
 
 class NearbySync extends ChangeNotifier {
   NearbySync(this.repo) {
-    repo.onLocalEvents = _broadcast;
+    repo.localEventListeners.add(_broadcast);
   }
 
   final Repo repo;

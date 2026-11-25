@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../app_state.dart';
+import '../calls/call_screen.dart';
 import '../data.dart';
 import '../money.dart';
 import '../sync/sync_badge.dart';
@@ -81,6 +82,15 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
             ),
           ]),
           actions: [
+            PopupMenuButton<bool>(
+              icon: const Icon(Icons.call_outlined),
+              tooltip: 'Позвонить группе',
+              onSelected: (video) => startTripCall(context, b, video: video),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: false, child: ListTile(leading: Icon(Icons.call), title: Text('Звонок'))),
+                PopupMenuItem(value: true, child: ListTile(leading: Icon(Icons.videocam), title: Text('Видеозвонок'))),
+              ],
+            ),
             OutlinedButton(
               style: OutlinedButton.styleFrom(
                 foregroundColor: sos,
@@ -321,6 +331,22 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
     final cs = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final time = DateFormat('HH:mm').format(m.created);
+    final call = m.refId != null && m.refId!.startsWith('call:') ? m.refId!.split(':') : null;
+    if (m.kind == MsgKind.system && call != null && call.length == 3) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: ActionChip(
+            avatar: Icon(call[2] == '1' ? Icons.videocam : Icons.call, color: cs.primary),
+            label: Text('${m.text.replaceAll(' · нажмите, чтобы присоединиться', '')} · $time · войти'),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => CallScreen(tripId: widget.b.trip.id, room: call[1], video: call[2] == '1', title: widget.b.trip.name)),
+            ),
+          ),
+        ),
+      );
+    }
     if (m.kind == MsgKind.system) {
       return Center(
         child: Container(
@@ -698,4 +724,13 @@ class _PlanTabState extends State<PlanTab> with RepoListener<PlanTab> {
       ),
     );
   }
+}
+
+
+/// Начать звонок в поездке: запись «звонок» уходит всем, сами сразу входим в комнату.
+Future<void> startTripCall(BuildContext context, TripBundle b, {required bool video}) async {
+  final s = App.read(context);
+  final room = await s.calls.start(b, video: video, myName: s.myName);
+  if (!context.mounted) return;
+  Navigator.push(context, MaterialPageRoute(builder: (_) => CallScreen(tripId: b.trip.id, room: room, video: video, title: b.trip.name)));
 }

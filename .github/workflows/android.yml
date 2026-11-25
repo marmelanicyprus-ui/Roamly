@@ -3,6 +3,7 @@ name: Android APK
 on:
   push:
     branches: [main]
+    paths-ignore: ['server/**', '*.md']
   workflow_dispatch:
 
 permissions:
@@ -46,6 +47,17 @@ jobs:
           if ! grep -q 'android.intent.action.DIAL' android/app/src/main/AndroidManifest.xml; then
             sed -i 's#<queries>#<queries>\n        <intent><action android:name="android.intent.action.DIAL"/><data android:scheme="tel"/></intent>#' android/app/src/main/AndroidManifest.xml
           fi
+
+          # Звонки (LiveKit): микрофон, камера, звук
+          if ! grep -q 'RECORD_AUDIO' $M; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <application#' $M
+          fi
+          # WebRTC требует Android 7+ (minSdk 24)
+          G=android/app/build.gradle.kts
+          [ -f $G ] && sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' $G
+          [ -f android/app/build.gradle ] && sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' android/app/build.gradle
+          # Правила R8 для WebRTC (иначе звонки падают в release-сборке)
+          printf '%s\n' '-keep class org.webrtc.** { *; }' '-keep class com.cloudwebrtc.webrtc.** { *; }' '-keep class io.livekit.** { *; }' '-dontwarn org.webrtc.**' > android/app/proguard-rules.pro
 
       - run: flutter pub get
 

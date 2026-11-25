@@ -371,14 +371,17 @@ class Repo extends ChangeNotifier {
   final String deviceId;
   int _seq;
 
-  /// Вызывается для новых записей, созданных на этом телефоне (для отправки соседям).
-  void Function(List<SyncEvent> events)? onLocalEvents;
+  /// Подписчики на новые записи, созданные на этом телефоне (рассылка соседям, сервер).
+  final localEventListeners = <void Function(List<SyncEvent> events)>[];
+
+  /// Подписчики на записи, пришедшие с других телефонов (входящие звонки и т.п.).
+  final ingestListeners = <void Function(List<SyncEvent> events)>[];
 
   static Future<Repo> open() async {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       p.join(dir, 'roamly.db'),
-      version: 3,
+      version: 4,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('ALTER TABLE trips ADD COLUMN meeting_lat REAL');
@@ -389,6 +392,8 @@ class Repo extends ChangeNotifier {
           await db.execute('ALTER TABLE plan_items ADD COLUMN done_ts INTEGER DEFAULT 0');
           await _createSyncTables(db);
           await _backfill(db);
+        } else if (from < 4) {
+          await db.execute('ALTER TABLE events ADD COLUMN sent INTEGER DEFAULT 0');
         }
       },
       onCreate: (db, v) async {
@@ -423,8 +428,9 @@ class Repo extends ChangeNotifier {
   }
 
   static Future<void> _createSyncTables(Database db) async {
+    // sent = 1 — запись уже есть на сервере-«почте».
     await db.execute('''CREATE TABLE events (id TEXT PRIMARY KEY, trip_id TEXT, device TEXT,
-      seq INTEGER, ts INTEGER, type TEXT, data TEXT)''');
+      seq INTEGER, ts INTEGER, type TEXT, data TEXT, sent INTEGER DEFAULT 0)''');
     await db.execute('CREATE INDEX events_trip ON events (trip_id, device, seq)');
     // Удалённые объекты: чтобы запоздавшая запись «добавить» не вернула их обратно.
     await db.execute('CREATE TABLE deleted (id TEXT PRIMARY KEY, trip_id TEXT)');
@@ -475,18 +481,25 @@ class Repo extends ChangeNotifier {
 
   void _published(List<SyncEvent> list) {
     notifyListeners();
-    onLocalEvents?.call(list);
+    for (final l in List.of(localEventListeners)) {
+      l(list);
+    }
   }
 
   /// Записи, пришедшие с другого телефона. Возвращает те, которых здесь ещё не было.
-  Future<List<SyncEvent>> ingest(List<SyncEvent> events) async {
+  Future<List<SyncEvent>> ingest(List<SyncEvent> events, {bool fromServer = false}) async {
     final fresh = <SyncEvent>[];
     final known = (await tripIds()).toSet();
     await _db.transaction((tx) async {
       for (final e in events) {
         if (!known.contains(e.tripId)) continue;
-        final n = await tx.insert('events', e.toRow(), conflictAlgorithm: ConflictAlgorithm.ignore);
-        if (n == 0) continue; // уже есть
+        final row = e.toRow();
+        if (fromServer) row['sent'] = 1;
+        final n = await tx.insert('events', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+        if (n == 0) {
+          if (fromServer) await tx.update('events', {'sent': 1}, where: 'id = ?', whereArgs: [e.id]);
+          continue; // уже есть
+        }
         try {
           await _apply(tx, e);
         } catch (err) {
@@ -495,8 +508,36 @@ class Repo extends ChangeNotifier {
         fresh.add(e);
       }
     });
-    if (fresh.isNotEmpty) notifyListeners();
+    if (fresh.isNotEmpty) {
+      notifyListeners();
+      for (final l in List.of(ingestListeners)) {
+        l(fresh);
+      }
+    }
     return fresh;
+  }
+
+  /// Записи, которых ещё нет на сервере (свои и полученные от соседей рядом).
+  Future<List<SyncEvent>> unsent({int limit = 200}) async {
+    final r = await _db.query('events', where: 'sent = 0 OR sent IS NULL', orderBy: 'ts ASC', limit: limit);
+    return r.map(SyncEvent.fromRow).toList();
+  }
+
+  Future<void> markSent(List<String> ids) async {
+    if (ids.isEmpty) return;
+    final batch = _db.batch();
+    for (final id in ids) {
+      batch.update('events', {'sent': 1}, where: 'id = ?', whereArgs: [id]);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Создать запись «звонок» (видна всем участникам; по ней присоединяются к комнате).
+  Future<SyncEvent> startCall(String tripId, {required String room, required String? memberId, required String name, required bool video}) async {
+    final evs = <SyncEvent>[];
+    await _db.transaction((tx) async => evs.add(await _emit(tx, tripId, 'call', {'room': room, 'by': memberId, 'name': name, 'video': video})));
+    _published(evs);
+    return evs.first;
   }
 
   /// Сколько записей от каждого телефона уже есть по поездке: {device: maxSeq}.
@@ -623,6 +664,20 @@ class Repo extends ChangeNotifier {
         // побеждает последняя отметка
         await tx.update('plan_items', {'done': d['done'] == true ? 1 : 0, 'done_ts': e.ts},
             where: 'id = ? AND (done_ts IS NULL OR done_ts < ?)', whereArgs: [d['id'], e.ts]);
+      case 'call':
+        await tx.insert(
+          'messages',
+          Message(
+            id: 'm-${e.id}',
+            tripId: e.tripId,
+            authorId: d['by'] as String?,
+            kind: MsgKind.system,
+            text: '📞 ${d['name'] ?? ''} ${d['video'] == true ? 'начал(а) видеозвонок' : 'начал(а) звонок'} · нажмите, чтобы присоединиться',
+            refId: 'call:${d['room']}:${d['video'] == true ? 1 : 0}',
+            created: DateTime.fromMillisecondsSinceEpoch(e.ts),
+          ).toMap(),
+          conflictAlgorithm: ignore,
+        );
       case 'plan.del':
         await tx.insert('deleted', {'id': d['id'], 'trip_id': e.tripId}, conflictAlgorithm: ignore);
         await tx.delete('plan_items', where: 'id = ?', whereArgs: [d['id']]);
