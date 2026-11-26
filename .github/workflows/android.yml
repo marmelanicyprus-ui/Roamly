@@ -57,6 +57,18 @@ jobs:
           grep -q 'POST_NOTIFICATIONS' $M || sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application#' $M
           # Lint падает внутри себя (баг lint с плагинами Firebase/WebRTC) — в release-сборке его не запускаем
           grep -q 'checkReleaseBuilds' android/app/build.gradle.kts 2>/dev/null || printf '\nandroid {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n}\n' >> android/app/build.gradle.kts
+          # Обновление из приложения (ota_update): разрешение на установку, FileProvider, приёмник результата
+          grep -q 'REQUEST_INSTALL_PACKAGES' $M || sed -i 's#<application#<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n    <application#' $M
+          if ! grep -q 'OtaUpdateFileProvider' $M; then
+            sed -i 's#</application>#    <provider android:name="sk.fourq.otaupdate.OtaUpdateFileProvider" android:authorities="${applicationId}.ota_update_provider" android:exported="false" android:grantUriPermissions="true">\n            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/ota_filepaths"/>\n        </provider>\n        <receiver android:name="sk.fourq.otaupdate.InstallResultReceiver" android:exported="false">\n            <intent-filter><action android:name="${applicationId}.ACTION_INSTALL_COMPLETE"/></intent-filter>\n        </receiver>\n    </application>#' $M
+          fi
+          mkdir -p android/app/src/main/res/xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<paths xmlns:android="http://schemas.android.com/apk/res/android">' '    <files-path name="internal_apk_storage" path="ota_update/"/>' '</paths>' > android/app/src/main/res/xml/ota_filepaths.xml
+          # ota_update 7 требует desugaring Java-библиотек
+          if ! grep -q 'isCoreLibraryDesugaringEnabled' android/app/build.gradle.kts; then
+            sed -i 's/compileOptions {/compileOptions {\n        isCoreLibraryDesugaringEnabled = true/' android/app/build.gradle.kts
+            printf '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' >> android/app/build.gradle.kts
+          fi
           # WebRTC требует Android 7+ (minSdk 24)
           G=android/app/build.gradle.kts
           [ -f $G ] && sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' $G
@@ -100,3 +112,14 @@ jobs:
           cp "roamly-$VERSION.apk" roamly.apk
           # Релиз android создан заранее: https://github.com/$GITHUB_REPOSITORY/releases/download/android/roamly.apk
           gh release upload android "roamly-$VERSION.apk" roamly.apk --clobber
+          # version.json — по нему приложение узнаёт о новой версии
+          BUILD=$(grep '^version:' pubspec.yaml | sed 's/.*+//')
+          python3 - "$VERSION" "$BUILD" "roamly-$VERSION.apk" <<'PY'
+          import hashlib, json, os, subprocess, sys
+          v, b, apk = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+          notes = subprocess.check_output(['git', 'log', '-1', '--pretty=%s']).decode().strip()
+          data = open(apk, 'rb').read()
+          json.dump({'version': v, 'build': b, 'notes': notes, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()},
+                    open('version.json', 'w'), ensure_ascii=False)
+          PY
+          gh release upload android version.json --clobber

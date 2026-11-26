@@ -44,6 +44,7 @@ class _RoamlyAppState extends State<RoamlyApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final s = App.read(context);
       s.startSync();
+      Future.delayed(const Duration(seconds: 5), s.updater.check);
       s.calls.incoming.addListener(_showIncoming);
       Push.init(onMessage: s.server.poke).then((token) {
         if (token != null) s.server.setPushToken(token);
@@ -77,6 +78,7 @@ class _RoamlyAppState extends State<RoamlyApp> with WidgetsBindingObserver {
       final s = App.read(context);
       s.server.poke();
       s.direct.ensureIdent().catchError((_) => 0);
+      s.updater.check();
     }
   }
 

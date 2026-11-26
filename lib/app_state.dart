@@ -5,6 +5,7 @@ import 'data.dart';
 import 'geo/location_service.dart';
 import 'geo/offline_maps.dart';
 import 'media/media_service.dart';
+import 'update/updater.dart';
 import 'sync/nearby_sync.dart';
 import 'sync/direct.dart';
 import 'sync/server_sync.dart';
@@ -43,6 +44,7 @@ class AppState extends ChangeNotifier {
     location.onMoved = (lat, lng) => offlineMaps.around(lat, lng);
     sync.onLoc = location.receive;
     server.onLoc = location.receive;
+    updater = Updater(isRoaming: () => traffic == TrafficMode.roaming);
   }
   final Repo repo;
 
@@ -54,6 +56,9 @@ class AppState extends ChangeNotifier {
 
   /// Карта без интернета (квадраты ±10 км).
   late final OfflineMaps offlineMaps;
+
+  /// Новая версия приложения: проверка и установка.
+  late final Updater updater;
 
   /// Автоматический обмен с телефонами группы рядом.
   final NearbySync sync;

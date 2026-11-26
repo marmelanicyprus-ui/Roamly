@@ -5,6 +5,7 @@ import '../app_state.dart';
 import '../data.dart';
 import '../sync/sync_badge.dart';
 import '../theme.dart';
+import '../update/updater.dart';
 import 'contacts.dart';
 import 'create_trip.dart';
 import 'join.dart';
@@ -119,6 +120,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Column(
         children: [
+          _UpdateBanner(updater: s.updater),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
@@ -355,6 +357,27 @@ class _Menu extends StatelessWidget {
               Navigator.push(context, MaterialPageRoute(builder: (_) => const RoamingPrepScreen()));
             },
           ),
+          ListenableBuilder(
+            listenable: s.updater,
+            builder: (context, _) {
+              final u = s.updater;
+              return ListTile(
+                leading: const Icon(Icons.system_update_outlined),
+                title: const Text('Проверить обновления'),
+                subtitle: Text(u.error ??
+                    (u.available != null
+                        ? 'Есть версия ${u.available!.version}'
+                        : (u.current.isEmpty ? 'Установлена 0.8.1' : 'Установлена ${u.current} — последняя'))),
+                onTap: () async {
+                  final has = await u.check(force: true);
+                  if (has) {
+                    u.dismissed = false;
+                    u.install();
+                  }
+                },
+              );
+            },
+          ),
           ListTile(
             leading: const Icon(Icons.dark_mode_outlined),
             title: const Text('Тема'),
@@ -391,11 +414,63 @@ class _Menu extends StatelessWidget {
           const Divider(height: 24),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            child: Text('Roamly offline 0.8.0 · данные на телефонах, сервер только передаёт',
+            child: Text('Roamly offline 0.8.1 · данные на телефонах, сервер только передаёт',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Полоска «Доступна новая версия» на главном экране.
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner({required this.updater});
+  final Updater updater;
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: updater,
+      builder: (context, _) {
+        final u = updater.available;
+        if (u == null || (updater.dismissed && updater.progress == null)) return const SizedBox.shrink();
+        final cs = Theme.of(context).colorScheme;
+        final p = updater.progress;
+        return Material(
+          color: cs.primaryContainer,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(Icons.system_update, color: cs.onPrimaryContainer),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Доступна версия ${u.version}${u.size > 0 ? ' · ${(u.size / 1024 / 1024).round()} МБ' : ''}',
+                        style: TextStyle(fontWeight: FontWeight.w600, color: cs.onPrimaryContainer)),
+                    if (u.notes.isNotEmpty)
+                      Text(u.notes, maxLines: 2, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12, color: cs.onPrimaryContainer)),
+                    if (updater.error != null)
+                      Text(updater.error!, style: TextStyle(fontSize: 12, color: cs.error)),
+                  ]),
+                ),
+                if (p == null && !updater.installing) ...[
+                  TextButton(onPressed: updater.later, child: const Text('Позже')),
+                  FilledButton(onPressed: updater.install, child: const Text('Обновить')),
+                ],
+              ]),
+              if (p != null) ...[
+                const SizedBox(height: 8),
+                LinearProgressIndicator(value: p == 0 ? null : p),
+                const SizedBox(height: 4),
+                Text('Скачивается ${(p * 100).round()}% — потом Android спросит «Установить?»',
+                    style: TextStyle(fontSize: 12, color: cs.onPrimaryContainer)),
+              ],
+            ]),
+          ),
+        );
+      },
     );
   }
 }
