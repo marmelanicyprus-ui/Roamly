@@ -169,6 +169,10 @@ class Message {
 
   /// 0 — «Чат» (общий), 1 — «Важное».
   final int channel;
+
+  /// Ответ на сообщение (id) и время последней правки (0 — не правили).
+  final String? replyTo;
+  final int edited;
   Message({
     required this.id,
     required this.tripId,
@@ -178,6 +182,8 @@ class Message {
     this.refId,
     required this.created,
     this.channel = 0,
+    this.replyTo,
+    this.edited = 0,
   });
   Map<String, Object?> toMap() => {
         'id': id,
@@ -188,6 +194,7 @@ class Message {
         'ref_id': refId,
         'created': created.millisecondsSinceEpoch,
         'channel': channel,
+        if (replyTo != null) 'reply_to': replyTo,
       };
   static Message fromMap(Map<String, Object?> m) => Message(
         id: m['id'] as String,
@@ -198,7 +205,21 @@ class Message {
         refId: m['ref_id'] as String?,
         created: DateTime.fromMillisecondsSinceEpoch(m['created'] as int),
         channel: (m['channel'] as int?) ?? 0,
+        replyTo: m['reply_to'] as String?,
+        edited: (m['edited'] as int?) ?? 0,
       );
+}
+
+/// Опрос в чате.
+class Poll {
+  final String id;
+  final String tripId;
+  final String? authorId;
+  final String question;
+  final List<String> options;
+  final bool multi;
+  final DateTime created;
+  Poll(this.id, this.tripId, this.authorId, this.question, this.options, this.multi, this.created);
 }
 
 /// Отметка «получено / прочитано» от одного телефона в беседе.
@@ -531,7 +552,7 @@ class Repo extends ChangeNotifier {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       p.join(dir, 'roamly.db'),
-      version: 6,
+      version: 7,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('ALTER TABLE trips ADD COLUMN meeting_lat REAL');
@@ -554,6 +575,11 @@ class Repo extends ChangeNotifier {
           await _createV5Tables(db);
         }
         if (from < 6) await _createV6Tables(db);
+        if (from < 7) {
+          await db.execute('ALTER TABLE messages ADD COLUMN reply_to TEXT');
+          await db.execute('ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0');
+          await _createV7Tables(db);
+        }
       },
       onCreate: (db, v) async {
         await db.execute('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
@@ -565,7 +591,8 @@ class Repo extends ChangeNotifier {
         await db.execute('''CREATE TABLE members (id TEXT PRIMARY KEY, trip_id TEXT, name TEXT,
           is_child INTEGER, wallet_id TEXT, is_me INTEGER, device TEXT, pub TEXT)''');
         await db.execute('''CREATE TABLE messages (id TEXT PRIMARY KEY, trip_id TEXT, author_id TEXT,
-          kind INTEGER, text TEXT, ref_id TEXT, created INTEGER, channel INTEGER DEFAULT 0)''');
+          kind INTEGER, text TEXT, ref_id TEXT, created INTEGER, channel INTEGER DEFAULT 0,
+          reply_to TEXT, edited INTEGER DEFAULT 0)''');
         await db.execute('''CREATE TABLE expenses (id TEXT PRIMARY KEY, trip_id TEXT, title TEXT,
           category TEXT, amount_cents INTEGER, currency TEXT, rate REAL, trip_cents INTEGER,
           payer_id TEXT, mode INTEGER, created INTEGER)''');
@@ -577,6 +604,7 @@ class Repo extends ChangeNotifier {
         await _createSyncTables(db);
         await _createV5Tables(db);
         await _createV6Tables(db);
+        await _createV7Tables(db);
       },
     );
     var dev = (await db.query('kv', where: 'k = ?', whereArgs: ['device_id'])).firstOrNull?['v'] as String?;
@@ -595,6 +623,15 @@ class Repo extends ChangeNotifier {
     await db.execute('CREATE INDEX events_trip ON events (trip_id, device, seq)');
     // Удалённые объекты: чтобы запоздавшая запись «добавить» не вернула их обратно.
     await db.execute('CREATE TABLE deleted (id TEXT PRIMARY KEY, trip_id TEXT)');
+  }
+
+  static Future<void> _createV7Tables(Database db) async {
+    await db.execute('''CREATE TABLE reactions (msg_id TEXT, trip_id TEXT, member_id TEXT, emoji TEXT, ts INTEGER,
+      PRIMARY KEY (msg_id, member_id))''');
+    await db.execute('''CREATE TABLE polls (id TEXT PRIMARY KEY, trip_id TEXT, author_id TEXT, question TEXT,
+      options TEXT, multi INTEGER, created INTEGER)''');
+    await db.execute('''CREATE TABLE votes (poll_id TEXT, trip_id TEXT, member_id TEXT, choices TEXT, ts INTEGER,
+      PRIMARY KEY (poll_id, member_id))''');
   }
 
   static Future<void> _createV6Tables(Database db) async {
@@ -748,7 +785,7 @@ class Repo extends ChangeNotifier {
     const ignore = ConflictAlgorithm.ignore;
     switch (e.type) {
       case 'msg':
-        final m = _cols(d, ['id', 'trip_id', 'author_id', 'kind', 'text', 'ref_id', 'created', 'channel']);
+        final m = _cols(d, ['id', 'trip_id', 'author_id', 'kind', 'text', 'ref_id', 'created', 'channel', 'reply_to']);
         if (!await _isDeleted(tx, m['id'] as String)) await tx.insert('messages', m, conflictAlgorithm: ignore);
         // Кто пишет текст, тот и владелец телефона: так узнаём телефон участника даже без «ident».
         if (d['author_id'] != null && d['kind'] == MsgKind.text.index) {
@@ -894,6 +931,62 @@ class Repo extends ChangeNotifier {
           ).toMap(),
           conflictAlgorithm: ignore,
         );
+      case 'msg.edit':
+        // правит только автор; побеждает последняя правка
+        await tx.update('messages', {'text': d['text'], 'edited': e.ts},
+            where: 'id = ? AND author_id = ? AND (edited IS NULL OR edited < ?)', whereArgs: [d['id'], d['author'], e.ts]);
+      case 'msg.del':
+        final id = d['id'] as String;
+        final own = await tx.query('messages', columns: ['author_id'], where: 'id = ?', whereArgs: [id]);
+        if (own.isNotEmpty && own.first['author_id'] != d['author']) return;
+        await tx.insert('deleted', {'id': id, 'trip_id': e.tripId}, conflictAlgorithm: ignore);
+        await tx.delete('messages', where: 'id = ?', whereArgs: [id]);
+        await tx.delete('reactions', where: 'msg_id = ?', whereArgs: [id]);
+      case 'react':
+        final emoji = (d['e'] as String?) ?? '';
+        final old = await tx.query('reactions', columns: ['ts'], where: 'msg_id = ? AND member_id = ?', whereArgs: [d['msg'], d['member']]);
+        if (old.isNotEmpty && ((old.first['ts'] as int?) ?? 0) > e.ts) return;
+        if (emoji.isEmpty) {
+          await tx.delete('reactions', where: 'msg_id = ? AND member_id = ?', whereArgs: [d['msg'], d['member']]);
+        } else {
+          await tx.insert('reactions', {'msg_id': d['msg'], 'trip_id': e.tripId, 'member_id': d['member'], 'emoji': emoji, 'ts': e.ts},
+              conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+      case 'poll':
+        final id = d['id'] as String;
+        if (await _isDeleted(tx, id)) return;
+        final n = await tx.insert(
+            'polls',
+            {
+              'id': id,
+              'trip_id': e.tripId,
+              'author_id': d['author'],
+              'question': d['q'],
+              'options': jsonEncode(d['o']),
+              'multi': d['multi'] == true ? 1 : 0,
+              'created': (d['created'] as num?)?.toInt() ?? e.ts,
+            },
+            conflictAlgorithm: ignore);
+        if (n == 0) return;
+        await tx.insert(
+          'messages',
+          Message(
+            id: 'm-$id',
+            tripId: e.tripId,
+            authorId: d['author'] as String?,
+            kind: MsgKind.text,
+            text: '📊 ${d['q']}',
+            refId: 'poll:$id',
+            created: DateTime.fromMillisecondsSinceEpoch((d['created'] as num?)?.toInt() ?? e.ts),
+            channel: (d['channel'] as num?)?.toInt() ?? 0,
+          ).toMap(),
+          conflictAlgorithm: ignore,
+        );
+      case 'vote':
+        final old = await tx.query('votes', columns: ['ts'], where: 'poll_id = ? AND member_id = ?', whereArgs: [d['poll'], d['member']]);
+        if (old.isNotEmpty && ((old.first['ts'] as int?) ?? 0) > e.ts) return;
+        await tx.insert('votes', {'poll_id': d['poll'], 'trip_id': e.tripId, 'member_id': d['member'], 'choices': jsonEncode(d['c'] ?? []), 'ts': e.ts},
+            conflictAlgorithm: ConflictAlgorithm.replace);
       case 'media.del':
         final id = d['id'] as String;
         await tx.insert('deleted', {'id': id, 'trip_id': e.tripId}, conflictAlgorithm: ignore);
@@ -1135,7 +1228,7 @@ class Repo extends ChangeNotifier {
         } catch (_) {}
       }
       await tx.rawDelete('DELETE FROM media_files WHERE media_id IN (SELECT id FROM media WHERE trip_id = ?)', [tripId]);
-      for (final t in ['expenses', 'messages', 'members', 'wallets', 'transfers', 'plan_items', 'events', 'deleted', 'media']) {
+      for (final t in ['expenses', 'messages', 'members', 'wallets', 'transfers', 'plan_items', 'events', 'deleted', 'media', 'reactions', 'polls', 'votes']) {
         await tx.delete(t, where: 'trip_id = ?', whereArgs: [tripId]);
       }
       await tx.delete('trips', where: 'id = ?', whereArgs: [tripId]);
@@ -1162,6 +1255,10 @@ class Repo extends ChangeNotifier {
   }
 
   Future<void> addMessage(Message m) => _one(m.tripId, 'msg', m.toMap());
+
+  /// Текст с упоминаниями: [at] — телефоны упомянутых (подсказка серверу для push без звука).
+  Future<void> sendText(Message m, {List<String> at = const []}) =>
+      _one(m.tripId, 'msg', {...m.toMap(), if (at.isNotEmpty) 'at': at});
 
   Future<void> setMeeting(Trip trip, String text, String time, String? authorId, {double? lat, double? lng}) async {
     trip.meetingText = text;
@@ -1284,4 +1381,76 @@ class Repo extends ChangeNotifier {
       _db.update('media_files', {'up': 1}, where: 'media_id = ? AND part = ?', whereArgs: [mediaId, part]);
 
   Future<void> deleteMedia(Media m) => _one(m.tripId, 'media.del', {'id': m.id});
+
+  // ---------- сообщения: ответ, правка, удаление, реакции, опросы (0.7) ----------
+  Future<void> editMessage(Message m, String text) =>
+      _one(m.tripId, 'msg.edit', {'id': m.id, 'text': text, 'author': m.authorId});
+
+  Future<void> deleteMessage(Message m) => _one(m.tripId, 'msg.del', {'id': m.id, 'author': m.authorId});
+
+  /// Своя реакция на сообщение; пустая строка — убрать.
+  Future<void> react(String tripId, String msgId, String? memberId, String emoji) =>
+      _one(tripId, 'react', {'msg': msgId, 'member': memberId, 'e': emoji});
+
+  /// Реакции беседы: msgId → {memberId → emoji}.
+  Future<Map<String, Map<String, String>>> reactions(String tripId) async {
+    final out = <String, Map<String, String>>{};
+    for (final r in await _db.query('reactions', where: 'trip_id = ?', whereArgs: [tripId])) {
+      (out[r['msg_id'] as String] ??= {})[r['member_id'] as String? ?? ''] = r['emoji'] as String;
+    }
+    return out;
+  }
+
+  Future<void> addPoll(String tripId, String? authorId, String q, List<String> options, {bool multi = false, int channel = 0}) =>
+      _one(tripId, 'poll', {
+        'id': newId(),
+        'author': authorId,
+        'q': q,
+        'o': options,
+        'multi': multi,
+        'created': DateTime.now().millisecondsSinceEpoch,
+        'channel': channel,
+      });
+
+  Future<void> vote(String tripId, String pollId, String? memberId, List<int> choices) =>
+      _one(tripId, 'vote', {'poll': pollId, 'member': memberId, 'c': choices});
+
+  Future<Map<String, Poll>> polls(String tripId) async {
+    final out = <String, Poll>{};
+    for (final r in await _db.query('polls', where: 'trip_id = ?', whereArgs: [tripId])) {
+      out[r['id'] as String] = Poll(
+        r['id'] as String,
+        tripId,
+        r['author_id'] as String?,
+        r['question'] as String,
+        (jsonDecode(r['options'] as String) as List).cast<String>(),
+        r['multi'] == 1,
+        DateTime.fromMillisecondsSinceEpoch(r['created'] as int),
+      );
+    }
+    return out;
+  }
+
+  /// Голоса: pollId → {memberId → номера вариантов}.
+  Future<Map<String, Map<String, List<int>>>> votes(String tripId) async {
+    final out = <String, Map<String, List<int>>>{};
+    for (final r in await _db.query('votes', where: 'trip_id = ?', whereArgs: [tripId])) {
+      (out[r['poll_id'] as String] ??= {})[r['member_id'] as String? ?? ''] =
+          (jsonDecode(r['choices'] as String) as List).map((x) => (x as num).toInt()).toList();
+    }
+    return out;
+  }
+
+  // ---------- звук беседы ----------
+  Future<bool> isMuted(String tripId) async => (await getSetting('mute:$tripId')) == '1';
+
+  Future<void> setMuted(String tripId, bool on) async {
+    await setSetting('mute:$tripId', on ? '1' : '0');
+    notifyListeners();
+  }
+
+  Future<Set<String>> mutedTrips() async {
+    final r = await _db.query('kv', where: "k LIKE 'mute:%' AND v = '1'");
+    return {for (final x in r) (x['k'] as String).substring(5)};
+  }
 }

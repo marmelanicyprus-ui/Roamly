@@ -92,7 +92,7 @@ class DirectService {
   void _onIngested(List<SyncEvent> events) {
     for (final e in events) {
       if (e.type == 'dm') _openInvite(e);
-      if (const {'msg', 'expense', 'meeting', 'transfer', 'call', 'media'}.contains(e.type) && e.device != repo.deviceId) {
+      if (const {'msg', 'expense', 'meeting', 'transfer', 'call', 'media', 'poll'}.contains(e.type) && e.device != repo.deviceId) {
         _scheduleDelivered(e.tripId);
       }
     }

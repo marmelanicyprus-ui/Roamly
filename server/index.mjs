@@ -48,6 +48,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS events_trip ON events (trip, s);
   CREATE TABLE IF NOT EXISTS devices (dev TEXT PRIMARY KEY, token TEXT, seen INTEGER);
   CREATE TABLE IF NOT EXISTS device_trips (dev TEXT, trip TEXT, PRIMARY KEY (dev, trip));
+  CREATE TABLE IF NOT EXISTS mutes (dev TEXT, trip TEXT, PRIMARY KEY (dev, trip));
 `);
 const q = {
   insert: db.prepare('INSERT OR IGNORE INTO events (trip, id, b, ts) VALUES (?, ?, ?, ?)'),
@@ -56,6 +57,9 @@ const q = {
   token: db.prepare('INSERT INTO devices (dev, token, seen) VALUES (?, ?, ?) ON CONFLICT(dev) DO UPDATE SET token = excluded.token, seen = excluded.seen'),
   subDel: db.prepare('DELETE FROM device_trips WHERE dev = ?'),
   subAdd: db.prepare('INSERT OR IGNORE INTO device_trips (dev, trip) VALUES (?, ?)'),
+  muteDel: db.prepare('DELETE FROM mutes WHERE dev = ?'),
+  muteAdd: db.prepare('INSERT OR IGNORE INTO mutes (dev, trip) VALUES (?, ?)'),
+  muted: db.prepare('SELECT 1 FROM mutes WHERE dev = ? AND trip = ?'),
   tokensFor: db.prepare('SELECT d.dev, d.token FROM device_trips t JOIN devices d ON d.dev = t.dev WHERE t.trip = ? AND d.token IS NOT NULL'),
   dropToken: db.prepare('UPDATE devices SET token = NULL WHERE token = ?'),
 };
@@ -106,6 +110,11 @@ function onMessage(ws, raw) {
         if (ws.dev) q.subAdd.run(ws.dev, t);
         sendBacklog(ws, t, Number(cur) || 0);
       }
+      // беседы без звука: push только для звонков и упоминаний
+      if (ws.dev && Array.isArray(m.mute)) {
+        q.muteDel.run(ws.dev);
+        for (const t of m.mute.slice(0, 500)) if (HASH_RE.test(t)) q.muteAdd.run(ws.dev, t);
+      }
       return;
     }
     case 'put': {
@@ -114,6 +123,7 @@ function onMessage(ws, raw) {
       const fresh = new Map(); // trip → [{s,b}]
       const calls = new Set(); // поездки, где начался звонок
       const loud = new Set(); // поездки, где есть что-то кроме служебных отметок
+      const at = new Map(); // поездка → телефоны, которых упомянули (@имя)
       for (const e of list) {
         if (!e || !HASH_RE.test(e.t) || typeof e.id !== 'string' || e.id.length > 64) continue;
         if (typeof e.b !== 'string' || e.b.length > MAX_BLOB) continue;
@@ -124,12 +134,16 @@ function onMessage(ws, raw) {
           fresh.get(e.t).push({ s: Number(r.lastInsertRowid), b: e.b });
           if (e.n === 'call') calls.add(e.t);
           if (e.n !== 'quiet') loud.add(e.t);
+          if (Array.isArray(e.at)) {
+            if (!at.has(e.t)) at.set(e.t, new Set());
+            for (const d of e.at.slice(0, 50)) if (typeof d === 'string') at.get(e.t).add(d);
+          }
         }
       }
       send(ws, { k: 'ack', ids });
       for (const [t, rows] of fresh) {
         for (const other of rooms.get(t) ?? []) if (other !== ws) send(other, { k: 'ev', t, e: rows });
-        if (loud.has(t)) notifyOffline(t, ws.dev, calls.has(t));
+        if (loud.has(t)) notifyOffline(t, ws.dev, calls.has(t), at.get(t));
       }
       return;
     }
@@ -178,11 +192,13 @@ async function fcmAccessToken() {
 }
 
 const lastPush = new Map(); // dev → ms, не чаще раза в 20 с
-async function notifyOffline(trip, fromDev, isCall = false) {
+async function notifyOffline(trip, fromDev, isCall = false, at = undefined) {
   if (!fcm) return;
   const rows = q.tokensFor.all(trip);
   for (const { dev, token } of rows) {
     if (dev === fromDev || online.has(dev)) continue;
+    const mention = at?.has(dev) ?? false;
+    if (!isCall && !mention && q.muted.get(dev, trip)) continue;
     const now = Date.now();
     if (!isCall && now - (lastPush.get(dev) || 0) < 20000) continue;
     lastPush.set(dev, now);
@@ -190,7 +206,7 @@ async function notifyOffline(trip, fromDev, isCall = false) {
       token,
       notification: isCall
         ? { title: 'Roamly offline: входящий звонок', body: 'Вам звонят из поездки — откройте приложение' }
-        : { title: 'Roamly offline', body: 'Новое в поездке' },
+        : { title: 'Roamly offline', body: mention ? 'Вас упомянули' : 'Новое в поездке' },
       data: { t: trip, call: isCall ? '1' : '0' },
       android: { priority: 'high', collapse_key: trip, notification: { tag: isCall ? `call-${trip}` : trip } },
     };

@@ -28,6 +28,7 @@ class _Row {
 class _HomeScreenState extends State<HomeScreen> {
   String _folder = 'all';
   List<_Row> _rows = [];
+  Set<String> _muted = {};
   Repo? _repoRef;
   Repo get _repo => _repoRef!;
 
@@ -54,8 +55,18 @@ class _HomeScreenState extends State<HomeScreen> {
       final b = await _repo.bundle(t.id);
       rows.add(_Row(t, await _repo.lastMessage(t.id), b.members.length, b.members.where((m) => !m.isMe).firstOrNull?.name));
     }
-    if (mounted) setState(() => _rows = rows);
+    final muted = await _repo.mutedTrips();
+    if (mounted) {
+      setState(() {
+        _rows = rows;
+        _muted = muted;
+      });
+    }
   }
+
+  Widget _mutedIcon(String tripId, ColorScheme cs) => _muted.contains(tripId)
+      ? Padding(padding: const EdgeInsets.only(right: 4), child: Icon(Icons.notifications_off_outlined, size: 16, color: cs.onSurfaceVariant))
+      : const SizedBox.shrink();
 
   List<_Row> get _visible => _rows.where((r) {
         if (r.trip.isDirect) return _folder == 'all' || _folder == 'direct';
@@ -255,6 +266,7 @@ class _TripTile extends StatelessWidget {
         leading: Avatar(name, size: 54),
         title: Row(children: [
           Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
+          _mutedIcon(t.id, cs),
           Text(when, style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
         ]),
         subtitle: Text(last?.text ?? 'Личный чат', maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -277,6 +289,7 @@ class _TripTile extends StatelessWidget {
       ),
       title: Row(children: [
         Expanded(child: Text(t.name, style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
+        _mutedIcon(t.id, cs),
         Text(when, style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
       ]),
       subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -376,7 +389,7 @@ class _Menu extends StatelessWidget {
           const Divider(height: 24),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            child: Text('Roamly offline 0.6.0 · данные на телефонах, сервер только передаёт',
+            child: Text('Roamly offline 0.7.0 · данные на телефонах, сервер только передаёт',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
           ),
         ],

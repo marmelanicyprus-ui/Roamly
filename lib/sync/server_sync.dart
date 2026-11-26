@@ -131,7 +131,12 @@ class ServerSync extends ChangeNotifier {
     for (final h in _hashToTrip.keys) {
       trips[h] = int.tryParse(await repo.getSetting('srv_cur:$h') ?? '') ?? 0;
     }
-    _send({'k': 'sub', 'trips': trips});
+    final muted = await repo.mutedTrips();
+    _send({
+      'k': 'sub',
+      'trips': trips,
+      'mute': [for (final id in muted) NearbySync.tripHash(id)],
+    });
   }
 
   // ---------------- приём ----------------
@@ -196,7 +201,8 @@ class ServerSync extends ChangeNotifier {
           'b': await _encrypt(e),
           // подсказка серверу для push «входящий звонок» (сам звонок зашифрован)
           if (e.type == 'call') 'n': 'call',
-          if (e.type == 'rcpt' || e.type == 'ident') 'n': 'quiet', // без push
+          if (const {'rcpt', 'ident', 'react', 'vote', 'msg.edit'}.contains(e.type)) 'n': 'quiet', // без push
+          if (e.type == 'msg' && e.data['at'] is List) 'at': e.data['at'], // упомянутые телефоны
         });
         _inFlight.add(e.id);
       }
