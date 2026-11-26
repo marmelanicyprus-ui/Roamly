@@ -52,8 +52,7 @@ jobs:
           if ! grep -q 'RECORD_AUDIO' $M; then
             sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <application#' $M
           fi
-          # Сохранение фото/видео в галерею на Android 10 и старше (gal)
-          grep -q 'WRITE_EXTERNAL_STORAGE' $M || sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>\n    <application#' $M
+          # WRITE_EXTERNAL_STORAGE (до Android 9) добавляет плагин camera; на Android 10+ галерея пишется без разрешения
           # Уведомления (Android 13+)
           grep -q 'POST_NOTIFICATIONS' $M || sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application#' $M
           # Lint падает внутри себя (баг lint с плагинами Firebase/WebRTC) — в release-сборке его не запускаем
