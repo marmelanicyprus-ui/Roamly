@@ -2,6 +2,7 @@
 // Каждое изменение — запись в журнале (таблица events). Телефоны обмениваются записями,
 // которых нет у другого (sync/nearby_sync.dart), и применяют их через Repo._apply.
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -362,6 +363,112 @@ class TripBundle {
   int get children => members.where((m) => m.isChild).length;
 }
 
+// ---------- вложения (0.6) ----------
+
+enum MediaKind { photo, video, note, voice, file }
+
+/// Часть вложения: p — просмотр фото, o — оригинал фото, v — видео/кружок, a — голосовое, f — файл.
+class MediaPart {
+  final int size;
+  final String hash; // sha256 содержимого
+  const MediaPart(this.size, this.hash);
+  Map<String, Object?> toJson() => {'s': size, 'h': hash};
+  static MediaPart fromJson(Map m) => MediaPart((m['s'] as num).toInt(), m['h'] as String);
+}
+
+/// Вложение: фото, видео, кружок, голосовое или файл. Миниатюра едет в журнале,
+/// сами части — отдельно (рядом по Wi‑Fi или через сервер), см. media/media_service.dart.
+class Media {
+  final String id;
+  final String tripId;
+  final String? authorId;
+  final MediaKind kind;
+  final DateTime created;
+  final String? name;
+  final String? mime;
+  final int w;
+  final int h;
+  final int durMs;
+  final String? thumb; // base64 JPEG, ~5–10 КБ
+  final Map<String, MediaPart> parts;
+  final int channel;
+  final String? caption;
+
+  Media({
+    required this.id,
+    required this.tripId,
+    this.authorId,
+    required this.kind,
+    required this.created,
+    this.name,
+    this.mime,
+    this.w = 0,
+    this.h = 0,
+    this.durMs = 0,
+    this.thumb,
+    required this.parts,
+    this.channel = 0,
+    this.caption,
+  });
+
+  /// Главная часть — то, что показываем/играем.
+  String get main => switch (kind) {
+        MediaKind.photo => 'p',
+        MediaKind.video || MediaKind.note => 'v',
+        MediaKind.voice => 'a',
+        MediaKind.file => 'f',
+      };
+
+  int get mainSize => parts[main]?.size ?? 0;
+
+  String get label => switch (kind) {
+        MediaKind.photo => '📷 Фото',
+        MediaKind.video => '🎬 Видео',
+        MediaKind.note => '⏺ Видеосообщение',
+        MediaKind.voice => '🎤 Голосовое',
+        MediaKind.file => '📎 ${name ?? 'Файл'}',
+      };
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'trip_id': tripId,
+        'author_id': authorId,
+        'kind': kind.index,
+        'created': created.millisecondsSinceEpoch,
+        'name': name,
+        'mime': mime,
+        'w': w,
+        'h': h,
+        'dur': durMs,
+        'thumb': thumb,
+        'parts': jsonEncode({for (final e in parts.entries) e.key: e.value.toJson()}),
+        'channel': channel,
+        'caption': caption,
+      };
+
+  static Media fromMap(Map<String, Object?> m) {
+    final raw = m['parts'];
+    final pm = raw is String ? (jsonDecode(raw) as Map) : (raw as Map? ?? {});
+    final k = (m['kind'] as num).toInt();
+    return Media(
+      id: m['id'] as String,
+      tripId: m['trip_id'] as String,
+      authorId: m['author_id'] as String?,
+      kind: k < MediaKind.values.length ? MediaKind.values[k] : MediaKind.file,
+      created: DateTime.fromMillisecondsSinceEpoch((m['created'] as num).toInt()),
+      name: m['name'] as String?,
+      mime: m['mime'] as String?,
+      w: (m['w'] as num?)?.toInt() ?? 0,
+      h: (m['h'] as num?)?.toInt() ?? 0,
+      durMs: (m['dur'] as num?)?.toInt() ?? 0,
+      thumb: m['thumb'] as String?,
+      parts: {for (final e in pm.entries) e.key as String: MediaPart.fromJson(e.value as Map)},
+      channel: (m['channel'] as num?)?.toInt() ?? 0,
+      caption: m['caption'] as String?,
+    );
+  }
+}
+
 /// Запись журнала изменений. Неизменяема; правка — новая запись.
 class SyncEvent {
   final String id;
@@ -424,7 +531,7 @@ class Repo extends ChangeNotifier {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       p.join(dir, 'roamly.db'),
-      version: 5,
+      version: 6,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('ALTER TABLE trips ADD COLUMN meeting_lat REAL');
@@ -446,6 +553,7 @@ class Repo extends ChangeNotifier {
           await db.execute('UPDATE messages SET channel = 1 WHERE kind = ${MsgKind.meeting.index}');
           await _createV5Tables(db);
         }
+        if (from < 6) await _createV6Tables(db);
       },
       onCreate: (db, v) async {
         await db.execute('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
@@ -468,6 +576,7 @@ class Repo extends ChangeNotifier {
           time TEXT, title TEXT, done INTEGER, done_ts INTEGER DEFAULT 0)''');
         await _createSyncTables(db);
         await _createV5Tables(db);
+        await _createV6Tables(db);
       },
     );
     var dev = (await db.query('kv', where: 'k = ?', whereArgs: ['device_id'])).firstOrNull?['v'] as String?;
@@ -486,6 +595,15 @@ class Repo extends ChangeNotifier {
     await db.execute('CREATE INDEX events_trip ON events (trip_id, device, seq)');
     // Удалённые объекты: чтобы запоздавшая запись «добавить» не вернула их обратно.
     await db.execute('CREATE TABLE deleted (id TEXT PRIMARY KEY, trip_id TEXT)');
+  }
+
+  static Future<void> _createV6Tables(Database db) async {
+    await db.execute('''CREATE TABLE media (id TEXT PRIMARY KEY, trip_id TEXT, author_id TEXT, kind INTEGER,
+      created INTEGER, name TEXT, mime TEXT, w INTEGER, h INTEGER, dur INTEGER, thumb TEXT, parts TEXT,
+      channel INTEGER DEFAULT 0, caption TEXT)''');
+    // Части вложений, которые есть на этом телефоне; up = 1 — уже на сервере (или не нужно загружать).
+    await db.execute('''CREATE TABLE media_files (media_id TEXT, part TEXT, path TEXT, up INTEGER DEFAULT 1,
+      PRIMARY KEY (media_id, part))''');
   }
 
   static Future<void> _createV5Tables(Database db) async {
@@ -757,6 +875,36 @@ class Repo extends ChangeNotifier {
       case 'plan.del':
         await tx.insert('deleted', {'id': d['id'], 'trip_id': e.tripId}, conflictAlgorithm: ignore);
         await tx.delete('plan_items', where: 'id = ?', whereArgs: [d['id']]);
+      case 'media':
+        final m = Media.fromMap({...d, 'trip_id': e.tripId});
+        if (await _isDeleted(tx, m.id)) return;
+        final n = await tx.insert('media', m.toMap(), conflictAlgorithm: ignore);
+        if (n == 0) return;
+        await tx.insert(
+          'messages',
+          Message(
+            id: 'm-${m.id}',
+            tripId: e.tripId,
+            authorId: m.authorId,
+            kind: MsgKind.text,
+            text: m.caption == null || m.caption!.isEmpty ? m.label : '${m.label} · ${m.caption}',
+            refId: 'media:${m.id}',
+            created: m.created,
+            channel: m.channel,
+          ).toMap(),
+          conflictAlgorithm: ignore,
+        );
+      case 'media.del':
+        final id = d['id'] as String;
+        await tx.insert('deleted', {'id': id, 'trip_id': e.tripId}, conflictAlgorithm: ignore);
+        for (final f in await tx.query('media_files', where: 'media_id = ?', whereArgs: [id])) {
+          try {
+            File(f['path'] as String).deleteSync();
+          } catch (_) {}
+        }
+        await tx.delete('media_files', where: 'media_id = ?', whereArgs: [id]);
+        await tx.delete('media', where: 'id = ?', whereArgs: [id]);
+        await tx.delete('messages', where: 'ref_id = ?', whereArgs: ['media:$id']);
       default:
         debugPrint('sync: неизвестный тип записи ${e.type} — пропускаем (новая версия у соседа)');
     }
@@ -979,7 +1127,15 @@ class Repo extends ChangeNotifier {
       for (final e in ex) {
         await tx.delete('expense_parts', where: 'expense_id = ?', whereArgs: [e['id']]);
       }
-      for (final t in ['expenses', 'messages', 'members', 'wallets', 'transfers', 'plan_items', 'events', 'deleted']) {
+      final files = await tx.rawQuery(
+          'SELECT f.path FROM media_files f JOIN media m ON m.id = f.media_id WHERE m.trip_id = ?', [tripId]);
+      for (final f in files) {
+        try {
+          File(f['path'] as String).deleteSync();
+        } catch (_) {}
+      }
+      await tx.rawDelete('DELETE FROM media_files WHERE media_id IN (SELECT id FROM media WHERE trip_id = ?)', [tripId]);
+      for (final t in ['expenses', 'messages', 'members', 'wallets', 'transfers', 'plan_items', 'events', 'deleted', 'media']) {
         await tx.delete(t, where: 'trip_id = ?', whereArgs: [tripId]);
       }
       await tx.delete('trips', where: 'id = ?', whereArgs: [tripId]);
@@ -1066,4 +1222,66 @@ class Repo extends ChangeNotifier {
     if (r.isEmpty) return;
     await _one(r.first['trip_id'] as String, 'plan.del', {'id': id});
   }
+
+  // ---------- вложения ----------
+  /// Новое вложение с этого телефона: [files] — части, которые лежат здесь (part → путь);
+  /// все, кроме оригинала фото, помечаются «загрузить на сервер».
+  Future<void> addMedia(Media m, Map<String, String> files) async {
+    final evs = <SyncEvent>[];
+    await _db.transaction((tx) async {
+      for (final f in files.entries) {
+        await tx.insert('media_files', {'media_id': m.id, 'part': f.key, 'path': f.value, 'up': f.key == 'o' ? 1 : 0},
+            conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      final data = m.toMap()..remove('trip_id');
+      evs.add(await _emit(tx, m.tripId, 'media', data));
+    });
+    _published(evs);
+  }
+
+  Future<List<Media>> mediaList({String? tripId, Set<MediaKind>? kinds}) async {
+    final r = tripId == null
+        ? await _db.query('media', orderBy: 'created DESC')
+        : await _db.query('media', where: 'trip_id = ?', whereArgs: [tripId], orderBy: 'created DESC');
+    final all = r.map(Media.fromMap);
+    return (kinds == null ? all : all.where((m) => kinds.contains(m.kind))).toList();
+  }
+
+  Future<Media?> media(String id) async {
+    final r = await _db.query('media', where: 'id = ?', whereArgs: [id]);
+    return r.isEmpty ? null : Media.fromMap(r.first);
+  }
+
+  /// Части вложений на этом телефоне: mediaId → {part → путь}.
+  Future<Map<String, Map<String, String>>> localMediaFiles() async {
+    final out = <String, Map<String, String>>{};
+    for (final r in await _db.query('media_files')) {
+      (out[r['media_id'] as String] ??= {})[r['part'] as String] = r['path'] as String;
+    }
+    return out;
+  }
+
+  Future<String?> mediaPath(String mediaId, String part) async {
+    final r = await _db.query('media_files', where: 'media_id = ? AND part = ?', whereArgs: [mediaId, part]);
+    return r.isEmpty ? null : r.first['path'] as String;
+  }
+
+  /// Часть пришла с другого телефона или с сервера.
+  Future<void> setMediaFile(String mediaId, String part, String path) async {
+    await _db.insert('media_files', {'media_id': mediaId, 'part': part, 'path': path, 'up': 1},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+    notifyListeners();
+  }
+
+  /// Свои части, которых ещё нет на сервере.
+  Future<List<(Media, String, String)>> pendingUploads() async {
+    final r = await _db.rawQuery(
+        'SELECT m.*, f.part AS f_part, f.path AS f_path FROM media_files f JOIN media m ON m.id = f.media_id WHERE f.up = 0');
+    return [for (final x in r) (Media.fromMap(x), x['f_part'] as String, x['f_path'] as String)];
+  }
+
+  Future<void> markUploaded(String mediaId, String part) =>
+      _db.update('media_files', {'up': 1}, where: 'media_id = ? AND part = ?', whereArgs: [mediaId, part]);
+
+  Future<void> deleteMedia(Media m) => _one(m.tripId, 'media.del', {'id': m.id});
 }

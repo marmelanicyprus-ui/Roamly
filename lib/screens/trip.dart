@@ -1,9 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:path/path.dart' as pth;
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 import '../app_state.dart';
 import '../calls/call_screen.dart';
 import '../data.dart';
+import '../media/media_service.dart';
+import '../media/media_widgets.dart';
 import '../money.dart';
 import '../sync/sync_badge.dart';
 import '../theme.dart';
@@ -11,6 +18,7 @@ import 'add_expense.dart';
 import 'home.dart' show dateRange;
 import 'invite.dart';
 import 'meeting.dart';
+import 'photos.dart';
 import 'sos.dart';
 
 /// Подписка экрана на изменения хранилища.
@@ -209,31 +217,8 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
           ChatTab(b: b),
           MapTab(b: b),
           ExpensesTab(b: b),
-          const _Soon(icon: Icons.photo_library_outlined, title: 'Фото', text: 'Общий альбом и передача фото рядом — в следующей сборке.'),
+          PhotosTab(b: b),
           PlanTab(b: b),
-        ]),
-      ),
-    );
-  }
-}
-
-class _Soon extends StatelessWidget {
-  const _Soon({required this.icon, required this.title, required this.text});
-  final IconData icon;
-  final String title;
-  final String text;
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 56, color: cs.onSurfaceVariant),
-          const SizedBox(height: 12),
-          Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 6),
-          Text(text, textAlign: TextAlign.center, style: TextStyle(color: cs.onSurfaceVariant)),
         ]),
       ),
     );
@@ -257,8 +242,25 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
   Map<String, Expense> _expenses = {};
   List<Receipt> _rcpt = [];
   int? _unsentSince;
+  Map<String, Media> _media = {};
+  Map<String, Map<String, String>> _local = {};
   final _text = TextEditingController();
   final _scroll = ScrollController();
+
+  // голосовое
+  final _rec = AudioRecorder();
+  bool _recording = false;
+  DateTime? _recStart;
+  Timer? _recTick;
+
+  @override
+  void initState() {
+    super.initState();
+    // пустое поле — вместо «отправить» кнопка микрофона
+    _text.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   Future<void> reload() async {
@@ -267,12 +269,16 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
     final ex = await repo.expenses(id);
     final rcpt = await repo.receipts(id);
     final unsent = await repo.oldestUnsent(id);
+    final media = await repo.mediaList(tripId: id);
+    final local = await repo.localMediaFiles();
     if (!mounted) return;
     setState(() {
       _msgs = msgs;
       _expenses = {for (final e in ex) e.id: e};
       _rcpt = rcpt;
       _unsentSince = unsent;
+      _media = {for (final m in media) m.id: m};
+      _local = local;
     });
     // открыли чат — отметить «прочитано»
     final s = App.read(context);
@@ -282,9 +288,54 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
 
   @override
   void dispose() {
+    _recTick?.cancel();
+    _rec.dispose();
     _text.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  Future<void> _startVoice() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      if (!await _rec.hasPermission()) {
+        messenger.showSnackBar(const SnackBar(content: Text('Нужно разрешение на микрофон')));
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final path = pth.join(dir.path, 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a');
+      await _rec.start(
+        const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 32000, sampleRate: 22050, numChannels: 1),
+        path: path,
+      );
+      _recStart = DateTime.now();
+      _recTick = Timer.periodic(const Duration(milliseconds: 300), (_) {
+        if (!mounted) return;
+        setState(() {});
+        if (DateTime.now().difference(_recStart!) >= const Duration(minutes: 10)) _stopVoice(send: true);
+      });
+      setState(() => _recording = true);
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Запись не началась: $e')));
+    }
+  }
+
+  Future<void> _stopVoice({required bool send}) async {
+    if (!_recording) return;
+    _recTick?.cancel();
+    final dur = DateTime.now().difference(_recStart!).inMilliseconds;
+    setState(() => _recording = false);
+    if (!send || dur < 700) {
+      await _rec.cancel();
+      return;
+    }
+    final path = await _rec.stop();
+    if (path == null || !mounted) return;
+    try {
+      await App.read(context).media.addVoice(widget.b, path, dur, channel: widget.channel);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не отправилось: $e')));
+    }
   }
 
   Future<void> _send() async {
@@ -374,7 +425,7 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
       showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (widget.channel == 0 && m.kind == MsgKind.text)
+          if (widget.channel == 0 && m.kind == MsgKind.text && m.refId == null)
             ListTile(
               leading: const Icon(Icons.priority_high),
               title: const Text('Переслать в «Важное»'),
@@ -390,6 +441,15 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
                   created: DateTime.now(),
                   channel: 1,
                 ));
+              },
+            ),
+          if (mine && m.refId != null && m.refId!.startsWith('media:') && _media[m.refId!.substring(6)] != null)
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Удалить у всех'),
+              onTap: () {
+                Navigator.pop(ctx);
+                confirmDeleteMedia(context, _media[m.refId!.substring(6)]!);
               },
             ),
           if (mine)
@@ -409,36 +469,27 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
   Future<void> _setMeeting() => editMeeting(context, widget.b);
 
   void _attach() {
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(
-            leading: const Icon(Icons.receipt_long_outlined),
-            title: const Text('Трата'),
-            onTap: () {
-              Navigator.pop(ctx);
-              Navigator.push(context, MaterialPageRoute(builder: (_) => AddExpenseScreen(tripId: widget.b.trip.id)));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.flag_outlined),
-            title: const Text('Точка сбора'),
-            onTap: () {
-              Navigator.pop(ctx);
-              _setMeeting();
-            },
-          ),
-          const ListTile(
-            enabled: false,
-            leading: Icon(Icons.photo_outlined),
-            title: Text('Фото, бронь, голосование'),
-            subtitle: Text('в следующей сборке'),
-          ),
-        ]),
-      ),
-    );
+    final direct = widget.b.trip.isDirect;
+    showAttachSheet(context, widget.b, channel: widget.channel, extra: [
+      if (!direct)
+        ListTile(
+          leading: const Icon(Icons.receipt_long_outlined),
+          title: const Text('Трата'),
+          onTap: () {
+            Navigator.pop(context);
+            Navigator.push(context, MaterialPageRoute(builder: (_) => AddExpenseScreen(tripId: widget.b.trip.id)));
+          },
+        ),
+      if (!direct)
+        ListTile(
+          leading: const Icon(Icons.flag_outlined),
+          title: const Text('Точка сбора'),
+          onTap: () {
+            Navigator.pop(context);
+            _setMeeting();
+          },
+        ),
+    ]);
   }
 
   @override
@@ -484,11 +535,8 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
-              child: Row(children: [
-                if (!widget.b.trip.isDirect)
-                  IconButton(icon: const Icon(Icons.attach_file), tooltip: 'Прикрепить', onPressed: _attach)
-                else
-                  const SizedBox(width: 8),
+              child: _recording ? _recordingRow(cs) : Row(children: [
+                IconButton(icon: const Icon(Icons.attach_file), tooltip: 'Прикрепить', onPressed: _attach),
                 Expanded(
                   child: TextField(
                     controller: _text,
@@ -506,13 +554,30 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                IconButton.filled(icon: const Icon(Icons.send), tooltip: 'Отправить', onPressed: _send),
+                if (_text.text.trim().isEmpty)
+                  IconButton.filled(icon: const Icon(Icons.mic), tooltip: 'Голосовое', onPressed: _startVoice)
+                else
+                  IconButton.filled(icon: const Icon(Icons.send), tooltip: 'Отправить', onPressed: _send),
               ]),
             ),
           ),
         ),
       ]),
     );
+  }
+
+  Widget _recordingRow(ColorScheme cs) {
+    final ms = _recStart == null ? 0 : DateTime.now().difference(_recStart!).inMilliseconds;
+    return Row(children: [
+      IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Отменить', onPressed: () => _stopVoice(send: false)),
+      const SizedBox(width: 4),
+      Icon(Icons.fiber_manual_record, color: (ms ~/ 600).isEven ? Colors.red : Colors.red.shade200, size: 14),
+      const SizedBox(width: 8),
+      Text(formatDur(ms), style: const TextStyle(fontSize: 16)),
+      const SizedBox(width: 12),
+      Expanded(child: Text('Идёт запись голосового', style: TextStyle(color: cs.onSurfaceVariant))),
+      IconButton.filled(icon: const Icon(Icons.send), tooltip: 'Отправить', onPressed: () => _stopVoice(send: true)),
+    ]);
   }
 
   Widget _bubble(Message m) {
@@ -574,6 +639,14 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
         Icon(Icons.flag_outlined, size: 18, color: cs.primary),
         const SizedBox(width: 6),
         Flexible(child: Text('Точка сбора: ${m.text}', style: const TextStyle(fontSize: 15))),
+      ]);
+    } else if (m.refId != null && m.refId!.startsWith('media:') && _media[m.refId!.substring(6)] != null) {
+      final md = _media[m.refId!.substring(6)]!;
+      body = Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        const SizedBox(height: 2),
+        MediaBubble(media: md, local: _local[md.id] ?? const {}, b: widget.b),
+        if (md.caption != null && md.caption!.isNotEmpty)
+          Padding(padding: const EdgeInsets.only(top: 6), child: Text(md.caption!, style: const TextStyle(fontSize: 15))),
       ]);
     } else {
       body = Text(m.text, style: const TextStyle(fontSize: 15, height: 1.3));

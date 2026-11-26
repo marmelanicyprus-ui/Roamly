@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'calls/call_service.dart';
 import 'data.dart';
+import 'media/media_service.dart';
 import 'sync/nearby_sync.dart';
 import 'sync/direct.dart';
 import 'sync/server_sync.dart';
@@ -23,8 +24,21 @@ class AppState extends ChangeNotifier {
       : sync = NearbySync(repo),
         server = ServerSync(repo),
         calls = CallService(repo),
-        direct = DirectService(repo);
+        direct = DirectService(repo) {
+    media = MediaService(repo,
+        isRoaming: () => traffic == TrafficMode.roaming, serverOn: () => server.state == ServerState.online);
+    media.nearby = sync;
+    sync.onFile = media.accept;
+    sync.localFile = repo.mediaPath;
+    sync.onPeer = media.schedule;
+    server.addListener(() {
+      if (server.state == ServerState.online) media.schedule();
+    });
+  }
   final Repo repo;
+
+  /// Вложения: фото, видео, кружки, голосовые, файлы.
+  late final MediaService media;
 
   /// Автоматический обмен с телефонами группы рядом.
   final NearbySync sync;

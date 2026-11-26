@@ -376,7 +376,7 @@ class _Menu extends StatelessWidget {
           const Divider(height: 24),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            child: Text('Roamly offline 0.5.1 · данные на телефонах, сервер только передаёт',
+            child: Text('Roamly offline 0.6.0 · данные на телефонах, сервер только передаёт',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
           ),
         ],

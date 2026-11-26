@@ -13,10 +13,13 @@
 // HTTP:
 //   GET  /health
 //   POST /call-token {t, room, id, name}  →  {url, token}   пропуск в звонок LiveKit
+//   PUT|GET /blob/<hash>/<id>              вложения (зашифрованы ключом поездки), хранятся 30 дней
+//   GET  /tiles/z/x/y.png                  карта
 import { createServer } from 'node:http';
 import { createHmac, createSign } from 'node:crypto';
 import { readFileSync, mkdirSync } from 'node:fs';
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat, rename, unlink, readdir, rm } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 
@@ -256,10 +259,88 @@ const http = createServer(async (req, res) => {
     // Комната всегда привязана к поездке: чужую комнату по хешу другой поездки не открыть.
     return json(200, { url: LK_URL, token: livekitToken({ room: `${b.t}-${b.room}`, id: b.id, name }) });
   }
+  const bm = /^\/blob\/([0-9a-f]{24})\/([A-Za-z0-9._-]{1,80})$/.exec(req.url);
+  if (bm && (req.method === 'PUT' || req.method === 'GET' || req.method === 'HEAD')) return blob(req, res, bm[1], bm[2]);
   const tm = req.method === 'GET' && /^\/tiles\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})\.png$/.exec(req.url);
   if (tm) return tile(res, Number(tm[1]), Number(tm[2]), Number(tm[3]));
   json(404, { error: 'not found' });
 });
+
+// ---------- вложения ----------
+const BLOB_DIR = `${DATA}/blobs`;
+const BLOB_MAX = 60 * 1024 * 1024;
+const BLOB_TTL = 30 * 24 * 3600 * 1000;
+async function blob(req, res, trip, id) {
+  const dir = `${BLOB_DIR}/${trip}`;
+  const file = `${dir}/${id}`;
+  if (req.method !== 'PUT') {
+    try {
+      const st = await stat(file);
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': st.size });
+      if (req.method === 'HEAD') return res.end();
+      return createReadStream(file).pipe(res);
+    } catch {
+      res.writeHead(404);
+      return res.end();
+    }
+  }
+  const len = Number(req.headers['content-length'] || 0);
+  if (len > BLOB_MAX) {
+    res.writeHead(413);
+    return res.end();
+  }
+  await mkdir(dir, { recursive: true });
+  const tmp = `${file}.${Date.now()}.part`;
+  let size = 0;
+  let tooBig = false;
+  const out = createWriteStream(tmp);
+  req.on('data', (c) => {
+    size += c.length;
+    if (size > BLOB_MAX && !tooBig) {
+      tooBig = true;
+      req.unpipe(out);
+      out.destroy();
+      unlink(tmp).catch(() => {});
+      res.writeHead(413);
+      res.end();
+    }
+  });
+  req.pipe(out);
+  out.on('finish', async () => {
+    if (tooBig) return;
+    try {
+      await rename(tmp, file);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    } catch (e) {
+      res.writeHead(500);
+      res.end();
+    }
+  });
+  out.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  });
+}
+
+async function cleanBlobs() {
+  try {
+    for (const t of await readdir(BLOB_DIR)) {
+      const dir = `${BLOB_DIR}/${t}`;
+      let left = 0;
+      for (const f of await readdir(dir)) {
+        const st = await stat(`${dir}/${f}`);
+        if (Date.now() - st.mtimeMs > BLOB_TTL) await unlink(`${dir}/${f}`).catch(() => {});
+        else left++;
+      }
+      if (left === 0) await rm(dir, { recursive: true, force: true });
+    }
+  } catch {}
+}
+setInterval(cleanBlobs, 6 * 3600 * 1000);
+cleanBlobs();
 
 const TILE_DIR = `${DATA}/tiles`;
 const TILE_TTL = 30 * 24 * 3600 * 1000;

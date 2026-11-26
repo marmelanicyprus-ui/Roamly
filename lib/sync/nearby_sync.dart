@@ -7,16 +7,21 @@
 // Протокол (JSON в байтовых пакетах до ~30 КБ):
 //   hello: {k:"hello", v:1, trips:{<хеш поездки>: {<device>: maxSeq}}}
 //   ev:    {k:"ev", e:[<запись>...]}
+//   want:  {k:"want", t:<хеш>, i:["<mediaId>:<часть>", ...]}   каких частей вложений не хватает
+//   file:  {k:"file", pid, m, p}                               следом идёт файл с этим payloadId
 // Поездка называется соседу только хешем её id: чужой телефон рядом ничего о ней не узнает.
 // iPhone: Nearby Connections там нет — для него будет отдельный транспорт (общая Wi‑Fi сеть / BLE)
 // с тем же протоколом hello/ev.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:nearby_connections/nearby_connections.dart';
+import 'package:path/path.dart' as pth;
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../data.dart';
@@ -46,6 +51,21 @@ class NearbySync extends ChangeNotifier {
   final Map<String, String> _found = {}; // endpointId -> device
   Map<String, String> _hashToTrip = {};
   Timer? _tick;
+
+  // Передача файлов: что за файл (из сообщения «file») и сам принятый файл.
+  final Map<int, (String, String)> _fileMeta = {}; // payloadId → (mediaId, часть)
+  final Map<int, Payload> _filePayload = {};
+  final Set<int> _fileDone = {};
+  final Set<String> _sending = {}; // "endpoint|media:part" — уже отправляем
+
+  /// Принять готовую часть вложения (MediaService.accept).
+  Future<bool> Function(String mediaId, String part, String tmpPath)? onFile;
+
+  /// Путь к части вложения, если она есть на этом телефоне.
+  Future<String?> Function(String mediaId, String part)? localFile;
+
+  /// Сосед соединился — пора попросить недостающие вложения.
+  void Function()? onPeer;
 
   SyncState state = SyncState.off;
   String? error;
@@ -179,7 +199,9 @@ class NearbySync extends ChangeNotifier {
   void _onInitiated(String endpointId, ConnectionInfo info) {
     _pending.add(endpointId);
     // Принимаем автоматически: данные поездок всё равно уходят только тем, у кого эта поездка есть.
-    _nearby.acceptConnection(endpointId, onPayLoadRecieved: _onPayload).catchError((e) {
+    _nearby
+        .acceptConnection(endpointId, onPayLoadRecieved: _onPayload, onPayloadTransferUpdate: _onTransfer)
+        .catchError((e) {
       debugPrint('sync: accept $endpointId: $e');
       return false;
     });
@@ -223,6 +245,11 @@ class NearbySync extends ChangeNotifier {
   }
 
   Future<void> _onPayload(String endpointId, Payload payload) async {
+    if (payload.type == PayloadType.FILE) {
+      _filePayload[payload.id] = payload;
+      await _tryFinishFile(payload.id);
+      return;
+    }
     if (payload.type != PayloadType.BYTES || payload.bytes == null) return;
     Map<String, dynamic> msg;
     try {
@@ -246,6 +273,7 @@ class NearbySync extends ChangeNotifier {
         await _sendEvents(endpointId, out);
         peer.lastExchange = DateTime.now();
         notifyListeners();
+        onPeer?.call();
       case 'ev':
         final list = [
           for (final m in (msg['e'] as List? ?? []))
@@ -259,6 +287,79 @@ class NearbySync extends ChangeNotifier {
           _broadcast(fresh, except: endpointId);
           notifyListeners();
         }
+        onPeer?.call();
+      case 'want':
+        final items = (msg['i'] as List? ?? []).cast<String>();
+        for (final it in items.take(50)) {
+          final i = it.lastIndexOf(':');
+          if (i <= 0) continue;
+          await _sendFile(endpointId, it.substring(0, i), it.substring(i + 1));
+        }
+      case 'file':
+        final pid = (msg['pid'] as num).toInt();
+        _fileMeta[pid] = (msg['m'] as String, msg['p'] as String);
+        await _tryFinishFile(pid);
+    }
+  }
+
+  // ---------------- файлы (вложения) ----------------
+
+  /// Попросить у соседей по поездке недостающие части вложений.
+  void want(String tripId, List<String> items) {
+    final h = tripHash(tripId);
+    for (final peer in _peers.values.toList()) {
+      if (peer.tripHashes.contains(h)) _send(peer.endpointId, {'k': 'want', 't': h, 'i': items});
+    }
+  }
+
+  Future<void> _sendFile(String endpointId, String mediaId, String part) async {
+    final key = '$endpointId|$mediaId:$part';
+    if (_sending.contains(key)) return;
+    final path = await localFile?.call(mediaId, part);
+    if (path == null || !await File(path).exists()) return;
+    _sending.add(key);
+    try {
+      final pid = await _nearby.sendFilePayload(endpointId, path);
+      await _send(endpointId, {'k': 'file', 'pid': pid, 'm': mediaId, 'p': part});
+    } catch (e) {
+      debugPrint('sync: файл $mediaId.$part: $e');
+    } finally {
+      Future.delayed(const Duration(minutes: 2), () => _sending.remove(key));
+    }
+  }
+
+  void _onTransfer(String endpointId, PayloadTransferUpdate u) {
+    if (u.status == PayloadStatus.SUCCESS) {
+      _fileDone.add(u.id);
+      _tryFinishFile(u.id);
+    } else if (u.status == PayloadStatus.FAILURE || u.status == PayloadStatus.CANCELED) {
+      _fileMeta.remove(u.id);
+      _filePayload.remove(u.id);
+    }
+  }
+
+  Future<void> _tryFinishFile(int pid) async {
+    final meta = _fileMeta[pid];
+    final payload = _filePayload[pid];
+    if (meta == null || payload == null || !_fileDone.contains(pid)) return;
+    _fileMeta.remove(pid);
+    _filePayload.remove(pid);
+    _fileDone.remove(pid);
+    try {
+      final tmp = pth.join((await getTemporaryDirectory()).path, 'nb_${pid}_${DateTime.now().millisecondsSinceEpoch}');
+      if (payload.uri != null) {
+        await _nearby.copyFileAndDeleteOriginal(payload.uri!, tmp);
+      } else if (payload.filePath != null) {
+        await File(payload.filePath!).copy(tmp);
+        try {
+          await File(payload.filePath!).delete();
+        } catch (_) {}
+      } else {
+        return;
+      }
+      await onFile?.call(meta.$1, meta.$2, tmp);
+    } catch (e) {
+      debugPrint('sync: приём файла: $e');
     }
   }
 
