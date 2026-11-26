@@ -64,9 +64,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget _mutedIcon(String tripId, ColorScheme cs) => _muted.contains(tripId)
-      ? Padding(padding: const EdgeInsets.only(right: 4), child: Icon(Icons.notifications_off_outlined, size: 16, color: cs.onSurfaceVariant))
-      : const SizedBox.shrink();
 
   List<_Row> get _visible => _rows.where((r) {
         if (r.trip.isDirect) return _folder == 'all' || _folder == 'direct';
@@ -153,7 +150,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.only(bottom: 96),
                     itemCount: _visible.length,
                     separatorBuilder: (_, __) => const Divider(height: 1, indent: 82),
-                    itemBuilder: (_, i) => _TripTile(row: _visible[i]),
+                    itemBuilder: (_, i) => _TripTile(row: _visible[i], muted: _muted.contains(_visible[i].trip.id)),
                   ),
           ),
         ],
@@ -247,8 +244,13 @@ String dateRange(DateTime a, DateTime b) {
 }
 
 class _TripTile extends StatelessWidget {
-  const _TripTile({required this.row});
+  const _TripTile({required this.row, this.muted = false});
   final _Row row;
+  final bool muted;
+
+  Widget _mutedIcon(String tripId, ColorScheme cs) => muted
+      ? Padding(padding: const EdgeInsets.only(right: 4), child: Icon(Icons.notifications_off_outlined, size: 16, color: cs.onSurfaceVariant))
+      : const SizedBox.shrink();
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
