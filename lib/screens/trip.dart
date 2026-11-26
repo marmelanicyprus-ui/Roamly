@@ -11,6 +11,7 @@ import 'add_expense.dart';
 import 'chat.dart';
 import 'home.dart' show dateRange;
 import 'invite.dart';
+import 'live_map.dart';
 import 'meeting.dart';
 import 'photos.dart';
 import 'sos.dart';
@@ -269,7 +270,7 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
         body: TabBarView(children: [
           ChatTab(b: b, channel: 1, search: _search),
           ChatTab(b: b, search: _search),
-          MapTab(b: b),
+          LiveMapTab(b: b),
           ExpensesTab(b: b),
           PhotosTab(b: b),
           PlanTab(b: b),

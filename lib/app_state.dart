@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'calls/call_service.dart';
 import 'data.dart';
+import 'geo/location_service.dart';
+import 'geo/offline_maps.dart';
 import 'media/media_service.dart';
 import 'sync/nearby_sync.dart';
 import 'sync/direct.dart';
@@ -34,11 +36,24 @@ class AppState extends ChangeNotifier {
     server.addListener(() {
       if (server.state == ServerState.online) media.schedule();
     });
+    location = LocationService(repo, isRoaming: () => traffic == TrafficMode.roaming);
+    offlineMaps = OfflineMaps(canDownload: () => server.state == ServerState.online && traffic != TrafficMode.roaming);
+    location.sendNearby = sync.sendLoc;
+    location.sendServer = server.sendLoc;
+    location.onMoved = (lat, lng) => offlineMaps.around(lat, lng);
+    sync.onLoc = location.receive;
+    server.onLoc = location.receive;
   }
   final Repo repo;
 
   /// Вложения: фото, видео, кружки, голосовые, файлы.
   late final MediaService media;
+
+  /// Где сейчас участники, «я на месте».
+  late final LocationService location;
+
+  /// Карта без интернета (квадраты ±10 км).
+  late final OfflineMaps offlineMaps;
 
   /// Автоматический обмен с телефонами группы рядом.
   final NearbySync sync;
@@ -59,6 +74,7 @@ class AppState extends ChangeNotifier {
     direct.ensureIdent().catchError((_) => 0);
     sync.start();
     server.setEnabled(traffic != TrafficMode.roaming);
+    location.start();
   }
 
   String myName = '';

@@ -11,6 +11,7 @@ import 'package:record/record.dart';
 import '../app_state.dart';
 import '../calls/call_screen.dart';
 import '../data.dart';
+import '../geo/open_in.dart';
 import '../media/media_service.dart';
 import '../media/media_widgets.dart';
 import '../money.dart';
@@ -524,7 +525,7 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
                   IconButton(
                     icon: const Icon(Icons.directions),
                     tooltip: 'Маршрут',
-                    onPressed: () => openInMaps(t.meetingLat!, t.meetingLng!, t.meetingText!),
+                    onPressed: () => showOpenIn(context, t.meetingLat!, t.meetingLng!, t.meetingText!),
                   ),
                 IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Изменить', onPressed: _setMeeting),
               ]),

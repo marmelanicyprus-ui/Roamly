@@ -552,7 +552,7 @@ class Repo extends ChangeNotifier {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       p.join(dir, 'roamly.db'),
-      version: 7,
+      version: 8,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('ALTER TABLE trips ADD COLUMN meeting_lat REAL');
@@ -580,6 +580,7 @@ class Repo extends ChangeNotifier {
           await db.execute('ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0');
           await _createV7Tables(db);
         }
+        if (from < 8) await _createV8Tables(db);
       },
       onCreate: (db, v) async {
         await db.execute('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
@@ -605,6 +606,7 @@ class Repo extends ChangeNotifier {
         await _createV5Tables(db);
         await _createV6Tables(db);
         await _createV7Tables(db);
+        await _createV8Tables(db);
       },
     );
     var dev = (await db.query('kv', where: 'k = ?', whereArgs: ['device_id'])).firstOrNull?['v'] as String?;
@@ -623,6 +625,12 @@ class Repo extends ChangeNotifier {
     await db.execute('CREATE INDEX events_trip ON events (trip_id, device, seq)');
     // Удалённые объекты: чтобы запоздавшая запись «добавить» не вернула их обратно.
     await db.execute('CREATE TABLE deleted (id TEXT PRIMARY KEY, trip_id TEXT)');
+  }
+
+  static Future<void> _createV8Tables(Database db) async {
+    // «на месте» у точки сбора: mkey — какая точка (координаты + время)
+    await db.execute('''CREATE TABLE arrivals (trip_id TEXT, member_id TEXT, mkey TEXT, ts INTEGER,
+      PRIMARY KEY (trip_id, member_id, mkey))''');
   }
 
   static Future<void> _createV7Tables(Database db) async {
@@ -987,6 +995,23 @@ class Repo extends ChangeNotifier {
         if (old.isNotEmpty && ((old.first['ts'] as int?) ?? 0) > e.ts) return;
         await tx.insert('votes', {'poll_id': d['poll'], 'trip_id': e.tripId, 'member_id': d['member'], 'choices': jsonEncode(d['c'] ?? []), 'ts': e.ts},
             conflictAlgorithm: ConflictAlgorithm.replace);
+      case 'arrived':
+        final n = await tx.insert('arrivals', {'trip_id': e.tripId, 'member_id': d['member'], 'mkey': d['key'], 'ts': e.ts},
+            conflictAlgorithm: ignore);
+        if (n > 0) {
+          await tx.insert(
+            'messages',
+            Message(
+              id: 'm-${e.id}',
+              tripId: e.tripId,
+              kind: MsgKind.system,
+              text: '📍 ${d['name'] ?? ''} на месте',
+              created: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              channel: 1,
+            ).toMap(),
+            conflictAlgorithm: ignore,
+          );
+        }
       case 'media.del':
         final id = d['id'] as String;
         await tx.insert('deleted', {'id': id, 'trip_id': e.tripId}, conflictAlgorithm: ignore);
@@ -1228,7 +1253,7 @@ class Repo extends ChangeNotifier {
         } catch (_) {}
       }
       await tx.rawDelete('DELETE FROM media_files WHERE media_id IN (SELECT id FROM media WHERE trip_id = ?)', [tripId]);
-      for (final t in ['expenses', 'messages', 'members', 'wallets', 'transfers', 'plan_items', 'events', 'deleted', 'media', 'reactions', 'polls', 'votes']) {
+      for (final t in ['expenses', 'messages', 'members', 'wallets', 'transfers', 'plan_items', 'events', 'deleted', 'media', 'reactions', 'polls', 'votes', 'arrivals']) {
         await tx.delete(t, where: 'trip_id = ?', whereArgs: [tripId]);
       }
       await tx.delete('trips', where: 'id = ?', whereArgs: [tripId]);
@@ -1452,5 +1477,11 @@ class Repo extends ChangeNotifier {
   Future<Set<String>> mutedTrips() async {
     final r = await _db.query('kv', where: "k LIKE 'mute:%' AND v = '1'");
     return {for (final x in r) (x['k'] as String).substring(5)};
+  }
+
+  /// Кто уже на месте у точки сбора [key].
+  Future<Set<String>> arrivals(String tripId, String key) async {
+    final r = await _db.query('arrivals', columns: ['member_id'], where: 'trip_id = ? AND mkey = ?', whereArgs: [tripId, key]);
+    return {for (final x in r) x['member_id'] as String};
   }
 }

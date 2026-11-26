@@ -64,6 +64,10 @@ const q = {
   dropToken: db.prepare('UPDATE devices SET token = NULL WHERE token = ?'),
 };
 
+/** Последние места участников (только в памяти, зашифрованы): hash → Map<dev, {b, ts}>. */
+const lastLoc = new Map();
+const LOC_TTL = 24 * 3600 * 1000;
+
 /** Подключения по поездкам: hash → Set<ws>. */
 const rooms = new Map();
 const online = new Map(); // dev → ws
@@ -109,6 +113,9 @@ function onMessage(ws, raw) {
         rooms.get(t).add(ws);
         if (ws.dev) q.subAdd.run(ws.dev, t);
         sendBacklog(ws, t, Number(cur) || 0);
+        for (const [dev, l] of lastLoc.get(t) ?? []) {
+          if (dev !== ws.dev && Date.now() - l.ts < LOC_TTL) send(ws, { k: 'loc', t, b: l.b });
+        }
       }
       // беседы без звука: push только для звонков и упоминаний
       if (ws.dev && Array.isArray(m.mute)) {
@@ -145,6 +152,14 @@ function onMessage(ws, raw) {
         for (const other of rooms.get(t) ?? []) if (other !== ws) send(other, { k: 'ev', t, e: rows });
         if (loud.has(t)) notifyOffline(t, ws.dev, calls.has(t), at.get(t));
       }
+      return;
+    }
+    case 'loc': {
+      // где сейчас участник: переслать тем, кто на связи, и запомнить последнюю точку
+      if (!ws.dev || !HASH_RE.test(m.t) || !ws.trips.has(m.t) || typeof m.b !== 'string' || m.b.length > 2048) return;
+      if (!lastLoc.has(m.t)) lastLoc.set(m.t, new Map());
+      lastLoc.get(m.t).set(ws.dev, { b: m.b, ts: Date.now() });
+      for (const other of rooms.get(m.t) ?? []) if (other !== ws) send(other, { k: 'loc', t: m.t, b: m.b });
       return;
     }
     case 'push': {
@@ -356,6 +371,12 @@ async function cleanBlobs() {
   } catch {}
 }
 setInterval(cleanBlobs, 6 * 3600 * 1000);
+setInterval(() => {
+  for (const [t, m] of lastLoc) {
+    for (const [d, l] of m) if (Date.now() - l.ts > LOC_TTL) m.delete(d);
+    if (m.size === 0) lastLoc.delete(t);
+  }
+}, 3600 * 1000);
 cleanBlobs();
 
 const TILE_DIR = `${DATA}/tiles`;

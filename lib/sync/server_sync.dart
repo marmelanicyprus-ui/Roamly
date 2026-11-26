@@ -165,12 +165,36 @@ class ServerSync extends ChangeNotifier {
         if (cursor > 0) await repo.setSetting('srv_cur:$h', '$cursor');
         lastSync = DateTime.now();
         notifyListeners();
+      case 'loc':
+        final tripId = _hashToTrip[m['t']];
+        if (tripId == null) return;
+        try {
+          final box = SecretBox.fromConcatenation(base64Decode(m['b'] as String), nonceLength: 12, macLength: 16);
+          final clear = await _aes.decrypt(box, secretKey: _key(tripId));
+          onLoc?.call(tripId, (jsonDecode(utf8.decode(clear)) as Map).cast<String, dynamic>());
+        } catch (_) {}
       case 'ack':
         final ids = [for (final i in (m['ids'] as List)) i as String];
         _inFlight.removeAll(ids);
         await repo.markSent(ids);
         lastSync = DateTime.now();
         notifyListeners();
+    }
+  }
+
+  // ---------------- места участников ----------------
+
+  /// Пришло место участника: (tripId, данные).
+  void Function(String tripId, Map<String, dynamic> data)? onLoc;
+
+  /// Своё место — только тем, кто сейчас на связи (сервер хранит лишь последнюю точку в памяти).
+  Future<void> sendLoc(String tripId, Map<String, Object?> data) async {
+    if (state != ServerState.online) return;
+    try {
+      final box = await _aes.encrypt(utf8.encode(jsonEncode(data)), secretKey: _key(tripId));
+      _send({'k': 'loc', 't': NearbySync.tripHash(tripId), 'b': base64Encode(box.concatenation())});
+    } catch (e) {
+      debugPrint('server: место: $e');
     }
   }
 

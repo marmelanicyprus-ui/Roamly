@@ -9,6 +9,7 @@
 //   ev:    {k:"ev", e:[<запись>...]}
 //   want:  {k:"want", t:<хеш>, i:["<mediaId>:<часть>", ...]}   каких частей вложений не хватает
 //   file:  {k:"file", pid, m, p}                               следом идёт файл с этим payloadId
+//   loc:   {k:"loc", t:<хеш>, d:{m, la, lo, a, t, b}}           где сейчас участник (в журнал не пишется)
 // Поездка называется соседу только хешем её id: чужой телефон рядом ничего о ней не узнает.
 // iPhone: Nearby Connections там нет — для него будет отдельный транспорт (общая Wi‑Fi сеть / BLE)
 // с тем же протоколом hello/ev.
@@ -66,6 +67,17 @@ class NearbySync extends ChangeNotifier {
 
   /// Сосед соединился — пора попросить недостающие вложения.
   void Function()? onPeer;
+
+  /// Пришло место участника рядом.
+  void Function(String tripId, Map data)? onLoc;
+
+  /// Своё место — соседям по этой поездке (без интернета).
+  void sendLoc(String tripId, Map<String, Object?> data) {
+    final h = tripHash(tripId);
+    for (final peer in _peers.values.toList()) {
+      if (peer.tripHashes.contains(h)) _send(peer.endpointId, {'k': 'loc', 't': h, 'd': data});
+    }
+  }
 
   SyncState state = SyncState.off;
   String? error;
@@ -288,6 +300,10 @@ class NearbySync extends ChangeNotifier {
           notifyListeners();
         }
         onPeer?.call();
+      case 'loc':
+        final tripId = _hashToTrip[msg['t']];
+        final d = msg['d'];
+        if (tripId != null && d is Map) onLoc?.call(tripId, d);
       case 'want':
         final items = (msg['i'] as List? ?? []).cast<String>();
         for (final it in items.take(50)) {
