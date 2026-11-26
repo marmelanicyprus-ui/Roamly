@@ -47,25 +47,80 @@ class TripScreen extends StatefulWidget {
 
 class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
   TripBundle? _b;
+  int _unreadImp = 0;
 
   @override
   Future<void> reload() async {
     try {
       final b = await repo.bundle(widget.tripId);
-      if (mounted) setState(() => _b = b);
+      final unread = await repo.unreadImportant(widget.tripId);
+      if (mounted) {
+        setState(() {
+          _b = b;
+          _unreadImp = unread;
+        });
+      }
     } catch (_) {
       // поездку удалили
     }
+  }
+
+  Widget _callButton(TripBundle b, {String tip = 'Позвонить группе'}) => PopupMenuButton<bool>(
+        icon: const Icon(Icons.call_outlined),
+        tooltip: tip,
+        onSelected: (video) => startTripCall(context, b, video: video),
+        itemBuilder: (_) => const [
+          PopupMenuItem(value: false, child: ListTile(leading: Icon(Icons.call), title: Text('Звонок'))),
+          PopupMenuItem(value: true, child: ListTile(leading: Icon(Icons.videocam), title: Text('Видеозвонок'))),
+        ],
+      );
+
+  /// Личный чат: только переписка и звонки.
+  Widget _direct(TripBundle b) {
+    final peer = b.members.where((m) => !m.isMe).firstOrNull;
+    final name = peer?.name ?? b.trip.name;
+    return Scaffold(
+      appBar: AppBar(
+        titleSpacing: 0,
+        title: Row(children: [
+          Avatar(name, size: 40),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+              peer?.device == null
+                  ? Text('ещё не принял(а) приглашение', style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant))
+                  : SyncBadge(tripId: b.trip.id),
+            ]),
+          ),
+        ]),
+        actions: [
+          _callButton(b, tip: 'Позвонить'),
+          PopupMenuButton<String>(
+            onSelected: (v) async {
+              if (v == 'delete') {
+                await repo.deleteTrip(b.trip.id);
+                if (mounted) Navigator.pop(context);
+              }
+            },
+            itemBuilder: (_) => const [PopupMenuItem(value: 'delete', child: Text('Удалить чат с этого телефона'))],
+          ),
+        ],
+      ),
+      body: ChatTab(b: b),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final b = _b;
     if (b == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (b.trip.isDirect) return _direct(b);
     final cs = Theme.of(context).colorScheme;
     final sos = sosColor(context);
     return DefaultTabController(
-      length: 5,
+      length: 6,
+      initialIndex: 1,
       child: Scaffold(
         appBar: AppBar(
           titleSpacing: 0,
@@ -82,15 +137,7 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
             ),
           ]),
           actions: [
-            PopupMenuButton<bool>(
-              icon: const Icon(Icons.call_outlined),
-              tooltip: 'Позвонить группе',
-              onSelected: (video) => startTripCall(context, b, video: video),
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: false, child: ListTile(leading: Icon(Icons.call), title: Text('Звонок'))),
-                PopupMenuItem(value: true, child: ListTile(leading: Icon(Icons.videocam), title: Text('Видеозвонок'))),
-              ],
-            ),
+            _callButton(b),
             OutlinedButton(
               style: OutlinedButton.styleFrom(
                 foregroundColor: sos,
@@ -105,6 +152,8 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
               onSelected: (v) async {
                 if (v == 'invite') {
                   Navigator.push(context, MaterialPageRoute(builder: (_) => InviteScreen(tripId: b.trip.id)));
+                } else if (v == 'members') {
+                  showMembers(context, b);
                 } else if (v == 'archive') {
                   b.trip.archived = !b.trip.archived;
                   await repo.updateTrip(b.trip);
@@ -127,19 +176,36 @@ class _TripScreenState extends State<TripScreen> with RepoListener<TripScreen> {
                 }
               },
               itemBuilder: (_) => [
+                const PopupMenuItem(value: 'members', child: Text('Участники · написать лично')),
                 const PopupMenuItem(value: 'invite', child: Text('Пригласить по QR')),
                 PopupMenuItem(value: 'archive', child: Text(b.trip.archived ? 'Вернуть из архива' : 'В архив')),
                 const PopupMenuItem(value: 'delete', child: Text('Удалить поездку')),
               ],
             ),
           ],
-          bottom: const TabBar(
-            isScrollable: false,
-            labelPadding: EdgeInsets.zero,
-            tabs: [Tab(text: 'Чат'), Tab(text: 'Карта'), Tab(text: 'Расходы'), Tab(text: 'Фото'), Tab(text: 'План')],
+          bottom: TabBar(
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            tabs: [
+              Tab(
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Text('Важное'),
+                  if (_unreadImp > 0) ...[
+                    const SizedBox(width: 6),
+                    Badge(label: Text('$_unreadImp'), backgroundColor: sos),
+                  ],
+                ]),
+              ),
+              const Tab(text: 'Чат'),
+              const Tab(text: 'Карта'),
+              const Tab(text: 'Расходы'),
+              const Tab(text: 'Фото'),
+              const Tab(text: 'План'),
+            ],
           ),
         ),
         body: TabBarView(children: [
+          ChatTab(b: b, channel: 1),
           ChatTab(b: b),
           MapTab(b: b),
           ExpensesTab(b: b),
@@ -177,8 +243,11 @@ class _Soon extends StatelessWidget {
 // ================= ЧАТ =================
 
 class ChatTab extends StatefulWidget {
-  const ChatTab({super.key, required this.b});
+  const ChatTab({super.key, required this.b, this.channel = 0});
   final TripBundle b;
+
+  /// 0 — «Чат», 1 — «Важное».
+  final int channel;
   @override
   State<ChatTab> createState() => _ChatTabState();
 }
@@ -186,18 +255,29 @@ class ChatTab extends StatefulWidget {
 class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
   List<Message> _msgs = [];
   Map<String, Expense> _expenses = {};
+  List<Receipt> _rcpt = [];
+  int? _unsentSince;
   final _text = TextEditingController();
   final _scroll = ScrollController();
 
   @override
   Future<void> reload() async {
-    final msgs = await repo.messages(widget.b.trip.id);
-    final ex = await repo.expenses(widget.b.trip.id);
+    final id = widget.b.trip.id;
+    final msgs = (await repo.messages(id)).where((m) => m.channel == widget.channel).toList();
+    final ex = await repo.expenses(id);
+    final rcpt = await repo.receipts(id);
+    final unsent = await repo.oldestUnsent(id);
     if (!mounted) return;
     setState(() {
       _msgs = msgs;
       _expenses = {for (final e in ex) e.id: e};
+      _rcpt = rcpt;
+      _unsentSince = unsent;
     });
+    // открыли чат — отметить «прочитано»
+    final s = App.read(context);
+    s.direct.markRead(widget.b);
+    if (widget.channel == 1) repo.markImportantSeen(id);
   }
 
   @override
@@ -218,7 +298,112 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
       kind: MsgKind.text,
       text: t,
       created: DateTime.now(),
+      channel: widget.channel,
     ));
+  }
+
+  /// Статус своего сообщения: 0 — ждёт отправки, 1 — ушло, 2 — доставлено всем, 3 — прочитано всеми.
+  int _status(Message m) {
+    final t = m.created.millisecondsSinceEpoch;
+    final myDev = repo.deviceId;
+    final others = <String>{
+      for (final x in widget.b.members)
+        if (!x.isMe && x.device != null && x.device != myDev) x.device!,
+      for (final r in _rcpt)
+        if (r.device != myDev) r.device,
+    };
+    final got = _rcpt.where((r) => r.device != myDev && r.delivered >= t).map((r) => r.device).toSet();
+    final read = _rcpt.where((r) => r.device != myDev && r.read >= t).map((r) => r.device).toSet();
+    if (others.isNotEmpty && others.every(read.contains)) return 3;
+    if (others.isNotEmpty && others.every(got.contains)) return 2;
+    if (got.isNotEmpty) return 1;
+    final u = _unsentSince;
+    return (u != null && u <= t + 1000) ? 0 : 1;
+  }
+
+  Widget _statusIcon(Message m, ColorScheme cs) {
+    final st = _status(m);
+    final (icon, color, tip) = switch (st) {
+      0 => (Icons.schedule, cs.onSurfaceVariant, 'Сохранено на телефоне, ждёт отправки'),
+      1 => (Icons.done, cs.onSurfaceVariant, 'Отправлено'),
+      2 => (Icons.done_all, cs.onSurfaceVariant, 'Доставлено всем'),
+      _ => (Icons.done_all, cs.primary, 'Прочитано всеми'),
+    };
+    return Tooltip(message: tip, child: Icon(icon, size: 14, color: color));
+  }
+
+  /// Кому доставлено и кто прочитал.
+  void _showStatus(Message m) {
+    final t = m.created.millisecondsSinceEpoch;
+    final fmt = DateFormat('d MMM HH:mm', 'ru');
+    final byDevice = {for (final r in _rcpt) r.device: r};
+    final people = widget.b.members.where((x) => !x.isMe).toList();
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ListView(shrinkWrap: true, children: [
+          const ListTile(title: Text('Статус сообщения', style: TextStyle(fontWeight: FontWeight.w600))),
+          for (final p in people) _statusTile(p, t, fmt, byDevice),
+        ]),
+      ),
+    );
+  }
+
+  Widget _statusTile(Member p, int t, DateFormat fmt, Map<String, Receipt> byDevice) {
+    final r = p.device == null ? _rcpt.where((x) => x.memberId == p.id).firstOrNull : byDevice[p.device];
+    final String line;
+    final IconData icon;
+    if (r != null && r.read >= t) {
+      line = 'прочитано · ${fmt.format(DateTime.fromMillisecondsSinceEpoch(r.read))}';
+      icon = Icons.done_all;
+    } else if (r != null && r.delivered >= t) {
+      line = 'доставлено · ${fmt.format(DateTime.fromMillisecondsSinceEpoch(r.delivered))}';
+      icon = Icons.done_all;
+    } else {
+      line = p.device == null ? 'нет приложения или ещё не вступил(а)' : 'ещё не доставлено';
+      icon = Icons.schedule;
+    }
+    return ListTile(leading: Avatar(p.name, size: 36), title: Text(p.name), subtitle: Text(line), trailing: Icon(icon, size: 18));
+  }
+
+  /// Долгое нажатие: переслать в «Важное», статус.
+  void _messageMenu(Message m, bool mine) {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (widget.channel == 0 && m.kind == MsgKind.text)
+            ListTile(
+              leading: const Icon(Icons.priority_high),
+              title: const Text('Переслать в «Важное»'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final author = widget.b.member(m.authorId);
+                await repo.addMessage(Message(
+                  id: newId(),
+                  tripId: widget.b.trip.id,
+                  authorId: widget.b.me?.id,
+                  kind: MsgKind.text,
+                  text: author == null || author.isMe ? m.text : '${author.name}: ${m.text}',
+                  created: DateTime.now(),
+                  channel: 1,
+                ));
+              },
+            ),
+          if (mine)
+            ListTile(
+              leading: const Icon(Icons.done_all),
+              title: const Text('Кому доставлено'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showStatus(m);
+              },
+            ),
+        ]),
+      ),
+    );
   }
 
   Future<void> _setMeeting() => editMeeting(context, widget.b);
@@ -300,7 +485,10 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
               child: Row(children: [
-                IconButton(icon: const Icon(Icons.attach_file), tooltip: 'Прикрепить', onPressed: _attach),
+                if (!widget.b.trip.isDirect)
+                  IconButton(icon: const Icon(Icons.attach_file), tooltip: 'Прикрепить', onPressed: _attach)
+                else
+                  const SizedBox(width: 8),
                 Expanded(
                   child: TextField(
                     controller: _text,
@@ -308,7 +496,7 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
                     maxLines: 4,
                     textCapitalization: TextCapitalization.sentences,
                     decoration: InputDecoration(
-                      hintText: 'Сообщение',
+                      hintText: widget.channel == 1 ? 'Важное для всех: место, время, изменения' : 'Сообщение',
                       filled: true,
                       fillColor: cs.surfaceContainerHighest,
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
@@ -392,7 +580,10 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
     }
     return Align(
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
+      child: GestureDetector(
+        onLongPress: () => _messageMenu(m, mine),
+        onTap: mine ? () => _showStatus(m) : null,
+        child: Container(
         constraints: const BoxConstraints(maxWidth: 290),
         margin: const EdgeInsets.symmetric(vertical: 3),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
@@ -415,16 +606,75 @@ class _ChatTabState extends State<ChatTab> with RepoListener<ChatTab> {
               Text(time, style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant)),
               if (mine) ...[
                 const SizedBox(width: 4),
-                Tooltip(
-                  message: 'Сохранено на телефоне, ждёт отправки',
-                  child: Icon(Icons.schedule, size: 13, color: cs.onSurfaceVariant),
-                ),
+                _statusIcon(m, cs),
               ],
             ]),
           ),
         ]),
       ),
+      ),
     );
+  }
+}
+
+/// Участники поездки: написать лично или позвонить.
+void showMembers(BuildContext context, TripBundle b) {
+  final others = b.members.where((m) => !m.isMe).toList();
+  showModalBottomSheet(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('Участники', style: TextStyle(fontWeight: FontWeight.w600))),
+        for (final m in others)
+          ListTile(
+            leading: Avatar(m.name, size: 40),
+            title: Text(m.name),
+            subtitle: Text(m.device == null ? 'без приложения или ещё не вступил(а)' : (m.isChild ? 'ребёнок' : 'в Roamly')),
+            trailing: m.device == null
+                ? null
+                : Row(mainAxisSize: MainAxisSize.min, children: [
+                    IconButton(
+                      icon: const Icon(Icons.chat_bubble_outline),
+                      tooltip: 'Написать лично',
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        openDirect(context, viaTripId: b.trip.id, memberId: m.id);
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.call_outlined),
+                      tooltip: 'Позвонить лично',
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        openDirect(context, viaTripId: b.trip.id, memberId: m.id, call: true);
+                      },
+                    ),
+                  ]),
+          ),
+        if (others.isEmpty) const ListTile(title: Text('Пока вы одни — пригласите остальных по QR')),
+      ]),
+    ),
+  );
+}
+
+/// Открыть (или создать) личный чат с участником; call — сразу позвонить.
+Future<void> openDirect(BuildContext context, {required String viaTripId, required String memberId, bool call = false}) async {
+  final s = App.read(context);
+  final messenger = ScaffoldMessenger.of(context);
+  final nav = Navigator.of(context);
+  try {
+    final id = await s.direct.openWith(viaTripId: viaTripId, peerMemberId: memberId);
+    if (call) {
+      final b = await s.repo.bundle(id);
+      final room = await s.calls.start(b, video: false, myName: s.myName);
+      final peer = b.members.where((m) => !m.isMe).firstOrNull;
+      nav.push(MaterialPageRoute(builder: (_) => CallScreen(tripId: id, room: room, video: false, title: peer?.name ?? 'Звонок')));
+    } else {
+      nav.push(MaterialPageRoute(builder: (_) => TripScreen(tripId: id)));
+    }
+  } catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text('$e')));
   }
 }
 

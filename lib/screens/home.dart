@@ -5,6 +5,7 @@ import '../app_state.dart';
 import '../data.dart';
 import '../sync/sync_badge.dart';
 import '../theme.dart';
+import 'contacts.dart';
 import 'create_trip.dart';
 import 'join.dart';
 import 'roaming_prep.dart';
@@ -20,7 +21,8 @@ class _Row {
   final Trip trip;
   final Message? last;
   final int members;
-  _Row(this.trip, this.last, this.members);
+  final String? peer; // для личного чата — имя собеседника
+  _Row(this.trip, this.last, this.members, [this.peer]);
 }
 
 class _HomeScreenState extends State<HomeScreen> {
@@ -50,24 +52,31 @@ class _HomeScreenState extends State<HomeScreen> {
     final rows = <_Row>[];
     for (final t in trips) {
       final b = await _repo.bundle(t.id);
-      rows.add(_Row(t, await _repo.lastMessage(t.id), b.members.length));
+      rows.add(_Row(t, await _repo.lastMessage(t.id), b.members.length, b.members.where((m) => !m.isMe).firstOrNull?.name));
     }
     if (mounted) setState(() => _rows = rows);
   }
 
   List<_Row> get _visible => _rows.where((r) {
+        if (r.trip.isDirect) return _folder == 'all' || _folder == 'direct';
         final ph = r.trip.phase;
         return switch (_folder) {
           'active' => ph == 'active',
           'upcoming' => ph == 'upcoming',
           'archive' => ph == 'archive' || ph == 'past',
+          'direct' => false,
           _ => ph != 'archive',
         };
       }).toList()
         ..sort((a, b) {
-          int rank(String p) => switch (p) { 'active' => 0, 'upcoming' => 1, _ => 2 };
-          final r = rank(a.trip.phase).compareTo(rank(b.trip.phase));
-          return r != 0 ? r : a.trip.start.compareTo(b.trip.start);
+          int rank(_Row x) => x.trip.isDirect ? 1 : switch (x.trip.phase) { 'active' => 0, 'upcoming' => 2, _ => 3 };
+          final r = rank(a).compareTo(rank(b));
+          if (r != 0) return r;
+          if (a.trip.isDirect) {
+            final la = a.last?.created ?? a.trip.created, lb = b.last?.created ?? b.trip.created;
+            return lb.compareTo(la);
+          }
+          return a.trip.start.compareTo(b.trip.start);
         });
 
   @override
@@ -89,6 +98,11 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           IconButton(
+            tooltip: 'Контакты',
+            icon: const Icon(Icons.people_outline),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen())),
+          ),
+          IconButton(
             tooltip: 'Присоединиться по QR',
             icon: const Icon(Icons.qr_code_scanner),
             onPressed: _join,
@@ -106,6 +120,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ('all', 'Все'),
                   ('active', active > 0 ? 'Активные $active' : 'Активные'),
                   ('upcoming', 'Предстоящие'),
+                  ('direct', 'Личные'),
                   ('archive', 'Архив'),
                 ])
                   Padding(
@@ -233,6 +248,20 @@ class _TripTile extends StatelessWidget {
         : DateUtils.isSameDay(last.created, DateTime.now())
             ? DateFormat('HH:mm').format(last.created)
             : DateFormat('d MMM', 'ru').format(last.created);
+    if (t.isDirect) {
+      final name = row.peer ?? t.name;
+      return ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        leading: Avatar(name, size: 54),
+        title: Row(children: [
+          Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
+          Text(when, style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+        ]),
+        subtitle: Text(last?.text ?? 'Личный чат', maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: cs.onSurface.withValues(alpha: 0.75))),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => TripScreen(tripId: t.id))),
+      );
+    }
     final phase = switch (t.phase) {
       'active' => 'идёт',
       'upcoming' => 'через ${t.start.difference(DateTime.now()).inDays + 1} дн.',
@@ -347,7 +376,7 @@ class _Menu extends StatelessWidget {
           const Divider(height: 24),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            child: Text('Roamly offline 0.4.1 · данные на телефонах, сервер только передаёт',
+            child: Text('Roamly offline 0.5.0 · данные на телефонах, сервер только передаёт',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
           ),
         ],

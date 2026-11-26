@@ -8,7 +8,9 @@ import '../app_state.dart';
 import '../data.dart';
 
 // Карта: OpenStreetMap. Офлайн-регионы — в следующих сборках, сейчас тайлы грузятся из интернета.
-const _tiles = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+// Публичные тайлы OSM запрещены для приложений (блокируют) — берём CARTO Voyager (данные OSM).
+const _tiles = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
+const _subdomains = ['a', 'b', 'c', 'd'];
 const _pkg = 'com.roamlyoffline.roamly';
 const _defaultCenter = LatLng(34.9178, 33.6383); // если нет геопозиции
 
@@ -54,7 +56,7 @@ Widget _meDot() => Container(
       ),
     );
 
-Widget _attribution() => const SimpleAttributionWidget(source: Text('OpenStreetMap contributors'));
+Widget _attribution() => const SimpleAttributionWidget(source: Text('OpenStreetMap contributors · CARTO'));
 
 /// Экран выбора точки: тап по карте ставит метку.
 class MapPickerScreen extends StatefulWidget {
@@ -95,7 +97,7 @@ class _MapPickerScreenState extends State<MapPickerScreen> {
             onTap: (_, p) => setState(() => _point = p),
           ),
           children: [
-            TileLayer(urlTemplate: _tiles, userAgentPackageName: _pkg),
+            TileLayer(urlTemplate: _tiles, subdomains: _subdomains, userAgentPackageName: _pkg),
             MarkerLayer(markers: [
               if (_me != null) Marker(point: _me!, width: 24, height: 24, child: _meDot()),
               if (_point != null) Marker(point: _point!, width: 48, height: 48, alignment: Alignment.topCenter, child: _pin(cs.primary)),
@@ -259,7 +261,7 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
         mapController: _map,
         options: MapOptions(initialCenter: meet ?? _defaultCenter, initialZoom: meet == null ? 12 : 15),
         children: [
-          TileLayer(urlTemplate: _tiles, userAgentPackageName: _pkg),
+          TileLayer(urlTemplate: _tiles, subdomains: _subdomains, userAgentPackageName: _pkg),
           MarkerLayer(markers: [
             if (_me != null) Marker(point: _me!, width: 24, height: 24, child: _meDot()),
             if (meet != null) Marker(point: meet, width: 48, height: 48, alignment: Alignment.topCenter, child: _pin(cs.primary)),

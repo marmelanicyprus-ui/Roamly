@@ -101,6 +101,7 @@ function onMessage(ws, raw) {
       const ids = [];
       const fresh = new Map(); // trip → [{s,b}]
       const calls = new Set(); // поездки, где начался звонок
+      const loud = new Set(); // поездки, где есть что-то кроме служебных отметок
       for (const e of list) {
         if (!e || !HASH_RE.test(e.t) || typeof e.id !== 'string' || e.id.length > 64) continue;
         if (typeof e.b !== 'string' || e.b.length > MAX_BLOB) continue;
@@ -110,12 +111,13 @@ function onMessage(ws, raw) {
           if (!fresh.has(e.t)) fresh.set(e.t, []);
           fresh.get(e.t).push({ s: Number(r.lastInsertRowid), b: e.b });
           if (e.n === 'call') calls.add(e.t);
+          if (e.n !== 'quiet') loud.add(e.t);
         }
       }
       send(ws, { k: 'ack', ids });
       for (const [t, rows] of fresh) {
         for (const other of rooms.get(t) ?? []) if (other !== ws) send(other, { k: 'ev', t, e: rows });
-        notifyOffline(t, ws.dev, calls.has(t));
+        if (loud.has(t)) notifyOffline(t, ws.dev, calls.has(t));
       }
       return;
     }

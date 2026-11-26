@@ -196,6 +196,7 @@ class ServerSync extends ChangeNotifier {
           'b': await _encrypt(e),
           // подсказка серверу для push «входящий звонок» (сам звонок зашифрован)
           if (e.type == 'call') 'n': 'call',
+          if (e.type == 'rcpt' || e.type == 'ident') 'n': 'quiet', // без push
         });
         _inFlight.add(e.id);
       }

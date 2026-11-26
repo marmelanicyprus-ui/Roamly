@@ -36,6 +36,10 @@ class Trip {
   double? meetingLng;
   final DateTime created;
 
+  /// 0 — поездка, 1 — личный чат на двоих.
+  final int kind;
+  bool get isDirect => kind == 1;
+
   Trip({
     required this.id,
     required this.name,
@@ -50,6 +54,7 @@ class Trip {
     this.meetingLat,
     this.meetingLng,
     required this.created,
+    this.kind = 0,
   });
 
   Map<String, Object?> toMap() => {
@@ -66,6 +71,7 @@ class Trip {
         'meeting_lat': meetingLat,
         'meeting_lng': meetingLng,
         'created': created.millisecondsSinceEpoch,
+        'kind': kind,
       };
 
   static Trip fromMap(Map<String, Object?> m) => Trip(
@@ -82,6 +88,7 @@ class Trip {
         meetingLat: (m['meeting_lat'] as num?)?.toDouble(),
         meetingLng: (m['meeting_lng'] as num?)?.toDouble(),
         created: DateTime.fromMillisecondsSinceEpoch(m['created'] as int),
+        kind: (m['kind'] as int?) ?? 0,
       );
 
   /// active / upcoming / past
@@ -112,6 +119,10 @@ class Member {
   bool isChild;
   String walletId;
   bool isMe;
+
+  /// Телефон участника (его ключ) и открытый ключ X25519 для личных сообщений — когда известны.
+  String? device;
+  String? pub;
   Member({
     required this.id,
     required this.tripId,
@@ -119,6 +130,8 @@ class Member {
     required this.isChild,
     required this.walletId,
     this.isMe = false,
+    this.device,
+    this.pub,
   });
   Map<String, Object?> toMap() => {
         'id': id,
@@ -127,6 +140,8 @@ class Member {
         'is_child': isChild ? 1 : 0,
         'wallet_id': walletId,
         'is_me': isMe ? 1 : 0,
+        'device': device,
+        'pub': pub,
       };
   static Member fromMap(Map<String, Object?> m) => Member(
         id: m['id'] as String,
@@ -135,6 +150,8 @@ class Member {
         isChild: (m['is_child'] as int) == 1,
         walletId: m['wallet_id'] as String,
         isMe: (m['is_me'] as int) == 1,
+        device: m['device'] as String?,
+        pub: m['pub'] as String?,
       );
 }
 
@@ -148,6 +165,9 @@ class Message {
   final String text;
   final String? refId;
   final DateTime created;
+
+  /// 0 — «Чат» (общий), 1 — «Важное».
+  final int channel;
   Message({
     required this.id,
     required this.tripId,
@@ -156,6 +176,7 @@ class Message {
     required this.text,
     this.refId,
     required this.created,
+    this.channel = 0,
   });
   Map<String, Object?> toMap() => {
         'id': id,
@@ -165,6 +186,7 @@ class Message {
         'text': text,
         'ref_id': refId,
         'created': created.millisecondsSinceEpoch,
+        'channel': channel,
       };
   static Message fromMap(Map<String, Object?> m) => Message(
         id: m['id'] as String,
@@ -174,7 +196,28 @@ class Message {
         text: m['text'] as String,
         refId: m['ref_id'] as String?,
         created: DateTime.fromMillisecondsSinceEpoch(m['created'] as int),
+        channel: (m['channel'] as int?) ?? 0,
       );
+}
+
+/// Отметка «получено / прочитано» от одного телефона в беседе.
+class Receipt {
+  final String device;
+  final String? memberId;
+  final int delivered;
+  final int read;
+  Receipt(this.device, this.memberId, this.delivered, this.read);
+}
+
+/// Человек, которому можно написать лично (известен по общим беседам).
+class Contact {
+  final String device;
+  final String name;
+  final String? pub;
+  final String? viaTripId; // беседа, через которую можно отправить приглашение в личный чат
+  final String? viaMemberId;
+  final String? directTripId; // уже есть личный чат
+  Contact(this.device, this.name, this.pub, this.viaTripId, this.viaMemberId, this.directTripId);
 }
 
 enum SplitMode { rules, equal, manual }
@@ -381,7 +424,7 @@ class Repo extends ChangeNotifier {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       p.join(dir, 'roamly.db'),
-      version: 4,
+      version: 5,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('ALTER TABLE trips ADD COLUMN meeting_lat REAL');
@@ -395,18 +438,26 @@ class Repo extends ChangeNotifier {
         } else if (from < 4) {
           await db.execute('ALTER TABLE events ADD COLUMN sent INTEGER DEFAULT 0');
         }
+        if (from < 5) {
+          await db.execute('ALTER TABLE trips ADD COLUMN kind INTEGER DEFAULT 0');
+          await db.execute('ALTER TABLE members ADD COLUMN device TEXT');
+          await db.execute('ALTER TABLE members ADD COLUMN pub TEXT');
+          await db.execute('ALTER TABLE messages ADD COLUMN channel INTEGER DEFAULT 0');
+          await db.execute('UPDATE messages SET channel = 1 WHERE kind = ${MsgKind.meeting.index}');
+          await _createV5Tables(db);
+        }
       },
       onCreate: (db, v) async {
         await db.execute('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
         await db.execute('''CREATE TABLE trips (id TEXT PRIMARY KEY, name TEXT, type INTEGER,
           start_ms INTEGER, end_ms INTEGER, currency TEXT, child_percent INTEGER, archived INTEGER,
           meeting_text TEXT, meeting_time TEXT, created INTEGER, meeting_lat REAL, meeting_lng REAL,
-          meeting_ts INTEGER DEFAULT 0)''');
+          meeting_ts INTEGER DEFAULT 0, kind INTEGER DEFAULT 0)''');
         await db.execute('CREATE TABLE wallets (id TEXT PRIMARY KEY, trip_id TEXT, name TEXT)');
         await db.execute('''CREATE TABLE members (id TEXT PRIMARY KEY, trip_id TEXT, name TEXT,
-          is_child INTEGER, wallet_id TEXT, is_me INTEGER)''');
+          is_child INTEGER, wallet_id TEXT, is_me INTEGER, device TEXT, pub TEXT)''');
         await db.execute('''CREATE TABLE messages (id TEXT PRIMARY KEY, trip_id TEXT, author_id TEXT,
-          kind INTEGER, text TEXT, ref_id TEXT, created INTEGER)''');
+          kind INTEGER, text TEXT, ref_id TEXT, created INTEGER, channel INTEGER DEFAULT 0)''');
         await db.execute('''CREATE TABLE expenses (id TEXT PRIMARY KEY, trip_id TEXT, title TEXT,
           category TEXT, amount_cents INTEGER, currency TEXT, rate REAL, trip_cents INTEGER,
           payer_id TEXT, mode INTEGER, created INTEGER)''');
@@ -416,6 +467,7 @@ class Repo extends ChangeNotifier {
         await db.execute('''CREATE TABLE plan_items (id TEXT PRIMARY KEY, trip_id TEXT, day INTEGER,
           time TEXT, title TEXT, done INTEGER, done_ts INTEGER DEFAULT 0)''');
         await _createSyncTables(db);
+        await _createV5Tables(db);
       },
     );
     var dev = (await db.query('kv', where: 'k = ?', whereArgs: ['device_id'])).firstOrNull?['v'] as String?;
@@ -434,6 +486,11 @@ class Repo extends ChangeNotifier {
     await db.execute('CREATE INDEX events_trip ON events (trip_id, device, seq)');
     // Удалённые объекты: чтобы запоздавшая запись «добавить» не вернула их обратно.
     await db.execute('CREATE TABLE deleted (id TEXT PRIMARY KEY, trip_id TEXT)');
+  }
+
+  static Future<void> _createV5Tables(Database db) async {
+    await db.execute('''CREATE TABLE receipts (trip_id TEXT, device TEXT, member_id TEXT,
+      delivered INTEGER DEFAULT 0, read INTEGER DEFAULT 0, PRIMARY KEY (trip_id, device))''');
   }
 
   /// Переход с 0.1.x: уже накопленные данные превращаются в записи журнала,
@@ -573,13 +630,26 @@ class Repo extends ChangeNotifier {
     const ignore = ConflictAlgorithm.ignore;
     switch (e.type) {
       case 'msg':
-        final m = _cols(d, ['id', 'trip_id', 'author_id', 'kind', 'text', 'ref_id', 'created']);
+        final m = _cols(d, ['id', 'trip_id', 'author_id', 'kind', 'text', 'ref_id', 'created', 'channel']);
         if (!await _isDeleted(tx, m['id'] as String)) await tx.insert('messages', m, conflictAlgorithm: ignore);
       case 'wallet':
         await tx.insert('wallets', _cols(d, ['id', 'trip_id', 'name']), conflictAlgorithm: ignore);
       case 'member':
-        final m = _cols(d, ['id', 'trip_id', 'name', 'is_child', 'wallet_id'])..['is_me'] = 0;
+        final m = _cols(d, ['id', 'trip_id', 'name', 'is_child', 'wallet_id', 'device', 'pub'])..['is_me'] = 0;
         await tx.insert('members', m, conflictAlgorithm: ignore);
+      case 'ident':
+        // какой телефон (и ключ) у участника
+        await tx.update('members', {'device': d['device'], 'pub': d['pub']},
+            where: 'id = ? AND trip_id = ?', whereArgs: [d['member'], e.tripId]);
+      case 'rcpt':
+        await tx.insert('receipts', {'trip_id': e.tripId, 'device': e.device, 'member_id': d['member']},
+            conflictAlgorithm: ignore);
+        await tx.rawUpdate(
+          'UPDATE receipts SET member_id = ?, delivered = MAX(delivered, ?), read = MAX(read, ?) WHERE trip_id = ? AND device = ?',
+          [d['member'], (d['d'] as num?)?.toInt() ?? 0, (d['r'] as num?)?.toInt() ?? 0, e.tripId, e.device],
+        );
+      case 'dm':
+        break; // приглашение в личный чат открывает DirectService (нужен закрытый ключ)
       case 'meeting':
         // побеждает самая поздняя точка сбора
         await tx.update(
@@ -603,6 +673,7 @@ class Repo extends ChangeNotifier {
             kind: MsgKind.meeting,
             text: '${d['text']} · ${d['time']}${d['lat'] != null ? ' · на карте' : ''}',
             created: DateTime.fromMillisecondsSinceEpoch(e.ts),
+            channel: 1,
           ).toMap(),
           conflictAlgorithm: ignore,
         );
@@ -686,6 +757,96 @@ class Repo extends ChangeNotifier {
     }
   }
 
+  // ---------- личное: ключи, отметки, контакты ----------
+
+  /// Записать в беседу событие от своего имени (служебные: ident, rcpt, dm).
+  Future<SyncEvent> emitEvent(String tripId, String type, Map<String, dynamic> data) async {
+    final evs = <SyncEvent>[];
+    await _db.transaction((tx) async => evs.add(await _emit(tx, tripId, type, data)));
+    _published(evs);
+    return evs.first;
+  }
+
+  Future<List<Receipt>> receipts(String tripId) async {
+    final r = await _db.query('receipts', where: 'trip_id = ?', whereArgs: [tripId]);
+    return [
+      for (final x in r)
+        Receipt(x['device'] as String, x['member_id'] as String?, (x['delivered'] as int?) ?? 0, (x['read'] as int?) ?? 0),
+    ];
+  }
+
+  /// Время самой старой своей записи в беседе, которая ещё никуда не ушла (null — всё ушло).
+  Future<int?> oldestUnsent(String tripId) async {
+    final r = await _db.rawQuery(
+        'SELECT MIN(ts) AS m FROM events WHERE trip_id = ? AND device = ? AND (sent = 0 OR sent IS NULL)', [tripId, deviceId]);
+    return r.first['m'] as int?;
+  }
+
+  /// Время последнего чужого сообщения в канале (для «прочитано» и счётчика «Важного»).
+  Future<int> lastForeignMessage(String tripId, {int? channel}) async {
+    final me = (await _db.query('members', columns: ['id'], where: 'trip_id = ? AND is_me = 1', whereArgs: [tripId]))
+        .firstOrNull?['id'] as String?;
+    final r = await _db.rawQuery(
+      'SELECT MAX(created) AS m FROM messages WHERE trip_id = ? AND kind != ${MsgKind.system.index} '
+      'AND (author_id IS NULL OR author_id != ?)${channel == null ? '' : ' AND channel = $channel'}',
+      [tripId, me ?? ''],
+    );
+    return (r.first['m'] as int?) ?? 0;
+  }
+
+  /// Сколько непрочитанных «Важных» от других.
+  Future<int> unreadImportant(String tripId) async {
+    final seen = int.tryParse(await getSetting('seen_imp:$tripId') ?? '') ?? 0;
+    final me = (await _db.query('members', columns: ['id'], where: 'trip_id = ? AND is_me = 1', whereArgs: [tripId]))
+        .firstOrNull?['id'] as String?;
+    final r = await _db.rawQuery(
+      'SELECT COUNT(*) AS c FROM messages WHERE trip_id = ? AND channel = 1 AND created > ? '
+      'AND (author_id IS NULL OR author_id != ?)',
+      [tripId, seen, me ?? ''],
+    );
+    return (r.first['c'] as int?) ?? 0;
+  }
+
+  Future<void> markImportantSeen(String tripId) async {
+    final last = await lastForeignMessage(tripId, channel: 1);
+    final seen = int.tryParse(await getSetting('seen_imp:$tripId') ?? '') ?? 0;
+    if (last <= seen) return; // нечего отмечать — без лишних обновлений экрана
+    await setSetting('seen_imp:$tripId', '$last');
+    notifyListeners();
+  }
+
+  /// Все, кому можно написать лично: участники общих бесед с известным телефоном.
+  Future<List<Contact>> contacts() async {
+    final rows = await _db.rawQuery('''
+      SELECT m.device, m.name, m.pub, m.id AS member_id, m.trip_id, t.kind
+      FROM members m JOIN trips t ON t.id = m.trip_id
+      WHERE m.device IS NOT NULL AND m.device != ? AND m.is_me = 0
+      ORDER BY t.kind DESC, t.created DESC''', [deviceId]);
+    final byDev = <String, Contact>{};
+    for (final r in rows) {
+      final dev = r['device'] as String;
+      final old = byDev[dev];
+      final isDirect = r['kind'] == 1;
+      byDev[dev] = Contact(
+        dev,
+        old?.name ?? r['name'] as String,
+        old?.pub ?? r['pub'] as String?,
+        old?.viaTripId ?? (isDirect ? null : r['trip_id'] as String),
+        old?.viaMemberId ?? (isDirect ? null : r['member_id'] as String),
+        old?.directTripId ?? (isDirect ? r['trip_id'] as String : null),
+      );
+    }
+    final list = byDev.values.toList()..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return list;
+  }
+
+  /// Личный чат с этим телефоном, если уже есть.
+  Future<String?> directWith(String device) async {
+    final r = await _db.rawQuery(
+        'SELECT t.id FROM trips t JOIN members m ON m.trip_id = t.id WHERE t.kind = 1 AND m.device = ? LIMIT 1', [device]);
+    return r.firstOrNull?['id'] as String?;
+  }
+
   // ---------- настройки ----------
   Future<String?> getSetting(String k) async {
     final r = await _db.query('kv', where: 'k = ?', whereArgs: [k]);
@@ -713,7 +874,7 @@ class Repo extends ChangeNotifier {
     );
   }
 
-  Future<void> createTrip(Trip trip, List<Wallet> wallets, List<Member> members) async {
+  Future<void> createTrip(Trip trip, List<Wallet> wallets, List<Member> members, {String? systemText}) async {
     final evs = <SyncEvent>[];
     await _db.transaction((tx) async {
       await tx.insert('trips', trip.toMap());
@@ -731,7 +892,7 @@ class Repo extends ChangeNotifier {
           id: newId(),
           tripId: trip.id,
           kind: MsgKind.system,
-          text: 'Поездка создана · ${members.length} участников',
+          text: systemText ?? 'Поездка создана · ${members.length} участников',
           created: DateTime.now(),
         ).toMap(),
       ));
@@ -747,7 +908,7 @@ class Repo extends ChangeNotifier {
   /// Присоединение по приглашению: копия поездки на этом телефоне.
   /// Новый участник и его кошелёк уходят остальным через журнал.
   Future<void> joinTrip(Trip trip, List<Wallet> wallets, List<Member> members, String myName,
-      {Wallet? newWallet, Member? newMember}) async {
+      {Wallet? newWallet, Member? newMember, bool announce = true}) async {
     final evs = <SyncEvent>[];
     await _db.transaction((tx) async {
       await tx.insert('trips', trip.toMap());
@@ -762,7 +923,8 @@ class Repo extends ChangeNotifier {
         evs.add(await _emit(tx, trip.id, 'member', newMember.toMap()));
         await tx.update('members', {'is_me': 1}, where: 'id = ?', whereArgs: [newMember.id]);
       }
-      evs.add(await _emit(
+      if (announce) {
+        evs.add(await _emit(
         tx,
         trip.id,
         'msg',
@@ -775,6 +937,7 @@ class Repo extends ChangeNotifier {
           created: DateTime.now(),
         ).toMap(),
       ));
+      }
     });
     _published(evs);
   }

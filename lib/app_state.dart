@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'calls/call_service.dart';
 import 'data.dart';
 import 'sync/nearby_sync.dart';
+import 'sync/direct.dart';
 import 'sync/server_sync.dart';
 
 enum TrafficMode { normal, economy, essential, roaming }
@@ -21,7 +22,8 @@ class AppState extends ChangeNotifier {
   AppState(this.repo)
       : sync = NearbySync(repo),
         server = ServerSync(repo),
-        calls = CallService(repo);
+        calls = CallService(repo),
+        direct = DirectService(repo);
   final Repo repo;
 
   /// Автоматический обмен с телефонами группы рядом.
@@ -33,9 +35,14 @@ class AppState extends ChangeNotifier {
   /// Звонки (LiveKit).
   final CallService calls;
 
+  /// Личные чаты, ключ телефона, отметки «доставлено/прочитано».
+  final DirectService direct;
+
   /// Запуск связи после ввода имени: рядом — всегда, сервер — если не режим «Роуминг».
   void startSync() {
+    direct.myName = myName;
     if (myName.isEmpty) return;
+    direct.ensureIdent().catchError((_) {});
     sync.start();
     server.setEnabled(traffic != TrafficMode.roaming);
   }

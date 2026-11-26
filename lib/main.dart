@@ -83,7 +83,8 @@ class _RoamlyAppState extends State<RoamlyApp> with WidgetsBindingObserver {
     s.calls.incoming.value = null;
     String tripName = '';
     try {
-      tripName = (await s.repo.bundle(c.tripId)).trip.name;
+      final b = await s.repo.bundle(c.tripId);
+      tripName = b.trip.isDirect ? 'личный звонок' : b.trip.name;
     } catch (_) {}
     navigatorKey.currentState?.push(MaterialPageRoute(
       builder: (_) => IncomingCallScreen(tripId: c.tripId, tripName: tripName, room: c.room, name: c.name, video: c.video),
