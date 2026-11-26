@@ -42,7 +42,7 @@ class AppState extends ChangeNotifier {
   void startSync() {
     direct.myName = myName;
     if (myName.isEmpty) return;
-    direct.ensureIdent().catchError((_) {});
+    direct.ensureIdent().catchError((_) => 0);
     sync.start();
     server.setEnabled(traffic != TrafficMode.roaming);
   }

@@ -16,6 +16,7 @@
 import { createServer } from 'node:http';
 import { createHmac, createSign } from 'node:crypto';
 import { readFileSync, mkdirSync } from 'node:fs';
+import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 
@@ -26,6 +27,14 @@ const LK_KEY = process.env.LIVEKIT_API_KEY || '';
 const LK_SECRET = process.env.LIVEKIT_API_SECRET || '';
 const FCM_FILE = process.env.FCM_SERVICE_ACCOUNT || ''; // путь к JSON сервисного аккаунта Firebase
 const MAX_BLOB = 64 * 1024;
+// Карта: телефоны берут тайлы у нас (/tiles/z/x/y.png), сервер — у поставщика.
+// С ключом MapTiler (бесплатный тариф) — улицы MapTiler, без ключа — OpenTopoMap (с кешем на диске).
+const MAPTILER_KEY = process.env.MAPTILER_KEY || '';
+const TILE_UP = MAPTILER_KEY
+  ? `https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=${MAPTILER_KEY}`
+  : 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png';
+const TILE_CACHE = !MAPTILER_KEY; // у MapTiler хранить тайлы у себя нельзя
+const TILE_UA = 'RoamlyOffline/0.5 (+https://github.com/marmelanicyprus-ui/Roamly)';
 const HASH_RE = /^[0-9a-f]{24}$/;
 
 mkdirSync(DATA, { recursive: true });
@@ -236,7 +245,7 @@ const http = createServer(async (req, res) => {
     res.end(JSON.stringify(obj));
   };
   if (req.method === 'GET' && req.url === '/health') {
-    return json(200, { ok: true, calls: Boolean(LK_KEY && LK_SECRET), push: Boolean(fcm), online: online.size });
+    return json(200, { ok: true, calls: Boolean(LK_KEY && LK_SECRET), push: Boolean(fcm), online: online.size, map: MAPTILER_KEY ? 'maptiler' : 'opentopomap' });
   }
   if (req.method === 'POST' && req.url === '/call-token') {
     if (!LK_KEY || !LK_SECRET || !LK_URL) return json(503, { error: 'calls not configured' });
@@ -247,8 +256,39 @@ const http = createServer(async (req, res) => {
     // Комната всегда привязана к поездке: чужую комнату по хешу другой поездки не открыть.
     return json(200, { url: LK_URL, token: livekitToken({ room: `${b.t}-${b.room}`, id: b.id, name }) });
   }
+  const tm = req.method === 'GET' && /^\/tiles\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})\.png$/.exec(req.url);
+  if (tm) return tile(res, Number(tm[1]), Number(tm[2]), Number(tm[3]));
   json(404, { error: 'not found' });
 });
+
+const TILE_DIR = `${DATA}/tiles`;
+const TILE_TTL = 30 * 24 * 3600 * 1000;
+async function tile(res, z, x, y) {
+  const n = 2 ** z;
+  if (z > 17 || x >= n || y >= n) {
+    res.writeHead(404);
+    return res.end();
+  }
+  const file = `${TILE_DIR}/${z}/${x}/${y}.png`;
+  const ok = (buf, hit) => {
+    res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=604800', 'x-cache': hit ? 'hit' : 'miss' });
+    res.end(buf);
+  };
+  try {
+    if (TILE_CACHE && Date.now() - (await stat(file)).mtimeMs < TILE_TTL) return ok(await readFile(file), true);
+  } catch {}
+  try {
+    const url = TILE_UP.replace('{s}', 'abc'[(x + y) % 3]).replace('{z}', z).replace('{x}', x).replace('{y}', y);
+    const r = await fetch(url, { headers: { 'user-agent': TILE_UA } });
+    if (!r.ok) throw new Error(`upstream ${r.status}`);
+    const buf = Buffer.from(await r.arrayBuffer());
+    ok(buf, false);
+    if (TILE_CACHE) mkdir(`${TILE_DIR}/${z}/${x}`, { recursive: true }).then(() => writeFile(file, buf)).catch(() => {});
+  } catch (e) {
+    res.writeHead(502, { 'content-type': 'text/plain' });
+    res.end(String(e.message || e));
+  }
+}
 
 const wss = new WebSocketServer({ server: http, path: '/ws', maxPayload: 4 * 1024 * 1024 });
 wss.on('connection', (ws) => {

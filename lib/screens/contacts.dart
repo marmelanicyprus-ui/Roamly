@@ -46,6 +46,14 @@ class _ContactsScreenState extends State<ContactsScreen> with RepoListener<Conta
       return;
     }
     if (c.viaTripId == null || c.viaMemberId == null) return;
+    if (c.pub == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        duration: const Duration(seconds: 6),
+        content: Text('Ключ телефона ${c.name} ещё не пришёл. Пусть ${c.name} обновит Roamly до 0.5.1, откроет его '
+            'рядом с вами или в интернете и нажмёт ⟳ в Контактах.'),
+      ));
+      return;
+    }
     await openDirect(context, viaTripId: c.viaTripId!, memberId: c.viaMemberId!, call: call);
   }
 
@@ -76,6 +84,19 @@ class _ContactsScreenState extends State<ContactsScreen> with RepoListener<Conta
         '2) Открой эту ссылку (или отсканируй в приложении): $link';
     if (!mounted) return;
     _share(n, text, link);
+  }
+
+  Future<void> _refresh() async {
+    final s = App.read(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final n = await s.direct.ensureIdent(force: true);
+      s.server.poke();
+      messenger.showSnackBar(SnackBar(content: Text('Ключ отправлен в беседы: $n. Остальные увидят вас, когда будут на связи.')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(duration: const Duration(seconds: 8), content: Text('Ошибка ключа: $e')));
+    }
+    reload();
   }
 
   void _share(String name, String text, String link) {
@@ -124,11 +145,24 @@ class _ContactsScreenState extends State<ContactsScreen> with RepoListener<Conta
     );
   }
 
+  Widget _diag(ColorScheme cs) {
+    final err = App.read(context).direct.lastError;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Text(
+        err == null ? 'Ключ этого телефона в порядке' : 'Ошибка ключа: $err',
+        style: TextStyle(fontSize: 12, color: err == null ? cs.onSurfaceVariant : cs.error),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Контакты')),
+      appBar: AppBar(title: const Text('Контакты'), actions: [
+        IconButton(icon: const Icon(Icons.refresh), tooltip: 'Отправить свой ключ заново', onPressed: _refresh),
+      ]),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _invite,
         icon: const Icon(Icons.person_add_alt),
@@ -140,24 +174,34 @@ class _ContactsScreenState extends State<ContactsScreen> with RepoListener<Conta
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(32),
-                    child: Text(
-                      'Здесь появятся все, с кем вы в одной поездке, и те, кто принял ваше приглашение. '
-                      'Им можно написать и позвонить лично.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: cs.onSurfaceVariant),
-                    ),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(
+                        'Здесь появятся все, с кем вы в одной поездке, и те, кто принял ваше приглашение. '
+                        'Им можно написать и позвонить лично.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: cs.onSurfaceVariant),
+                      ),
+                      _diag(cs),
+                    ]),
                   ),
                 )
               : ListView.separated(
                   padding: const EdgeInsets.only(bottom: 96),
-                  itemCount: _list.length,
+                  itemCount: _list.length + 1,
                   separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
                   itemBuilder: (_, i) {
+                    if (i == _list.length) return _diag(cs);
                     final c = _list[i];
                     return ListTile(
                       leading: Avatar(c.name, size: 44),
                       title: Text(c.name),
-                      subtitle: Text(c.directTripId != null ? 'личный чат' : (c.pub == null ? 'нужно обновить приложение' : 'из общей поездки')),
+                      subtitle: Text(c.directTripId != null
+                          ? 'личный чат'
+                          : c.pub != null
+                              ? 'из общей поездки · можно писать'
+                              : c.device != null
+                                  ? 'ждём ключ с его телефона'
+                                  : 'телефон пока не на связи'),
                       onTap: () => _open(c),
                       trailing: IconButton(icon: const Icon(Icons.call_outlined), tooltip: 'Позвонить', onPressed: () => _open(c, call: true)),
                     );

@@ -22,7 +22,7 @@ class DirectService {
     // Новая беседа (создали, вступили по QR или по ссылке) — опубликовать в ней свой ключ.
     repo.addListener(() {
       _identTimer?.cancel();
-      _identTimer = Timer(const Duration(seconds: 4), () => ensureIdent().catchError((_) {}));
+      _identTimer = Timer(const Duration(seconds: 4), () => ensureIdent().catchError((_) => 0));
     });
   }
   Timer? _identTimer;
@@ -56,16 +56,35 @@ class DirectService {
     _pub = base64Encode((await _kp!.extractPublicKey()).bytes);
   }
 
+  /// Последняя ошибка ключа/публикации (показывается в «Контактах»), null — всё в порядке.
+  String? lastError;
+  bool _learned = false;
+
   /// Опубликовать свой телефон и ключ во всех беседах, где их ещё не знают.
-  Future<void> ensureIdent() async {
-    await _ensureKeys();
-    for (final id in await repo.tripIds()) {
-      final b = await repo.bundle(id);
-      final me = b.me;
-      if (me == null) continue;
-      if (me.device == repo.deviceId && me.pub == _pub) continue;
-      await repo.emitEvent(id, 'ident', {'member': me.id, 'device': repo.deviceId, 'pub': _pub});
+  /// [force] — отправить заново во все беседы (кнопка «Обновить» в контактах).
+  Future<int> ensureIdent({bool force = false}) async {
+    var sent = 0;
+    try {
+      if (!_learned) {
+        _learned = true;
+        await repo.learnDevices();
+      }
+      await _ensureKeys();
+      for (final id in await repo.tripIds()) {
+        final b = await repo.bundle(id);
+        final me = b.me;
+        if (me == null) continue;
+        if (!force && me.device == repo.deviceId && me.pub == _pub) continue;
+        await repo.emitEvent(id, 'ident', {'member': me.id, 'device': repo.deviceId, 'pub': _pub});
+        sent++;
+      }
+      lastError = null;
+    } catch (e) {
+      lastError = '$e';
+      debugPrint('direct: ключ: $e');
+      rethrow;
     }
+    return sent;
   }
 
   // ---------------- входящее ----------------
@@ -143,7 +162,10 @@ class DirectService {
     final peer = via.member(peerMemberId)!;
     final existing = peer.device == null ? null : await repo.directWith(peer.device!);
     if (existing != null) return existing;
-    if (peer.pub == null) throw 'У ${peer.name} старая версия приложения — личные сообщения появятся после обновления';
+    if (peer.pub == null) {
+      throw 'Ключ телефона ${peer.name} ещё не пришёл. Нужна версия 0.5.1: пусть ${peer.name} откроет приложение, '
+          'когда вы рядом или в интернете, и нажмёт «Обновить» в Контактах';
+    }
     await _ensureKeys();
     final (dm, peerDmId) = await _createDirect(name: peer.name, currency: via.trip.currency, peerDevice: peer.device, peerPub: peer.pub);
     // Приглашение — только получателю: шифруем его открытым ключом.

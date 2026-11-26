@@ -40,6 +40,13 @@ FCM_SERVICE_ACCOUNT=/secrets/fcm.json
 ENV
   umask 022
 fi
+# Карта: ключ MapTiler (бесплатный тариф, maptiler.com → Account → API keys). Без ключа — OpenTopoMap.
+if ! grep -q '^MAPTILER_KEY=.' .env; then
+  echo
+  read -rp "Ключ MapTiler для карты (Enter — пропустить, будет OpenTopoMap): " MT_KEY || MT_KEY=""
+  sed -i '/^MAPTILER_KEY=/d' .env
+  echo "MAPTILER_KEY=$MT_KEY" >> .env
+fi
 echo "DOMAIN=$DOMAIN" > compose.env
 
 if command -v ufw >/dev/null && ufw status | grep -q active; then ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; fi

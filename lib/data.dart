@@ -211,7 +211,7 @@ class Receipt {
 
 /// Человек, которому можно написать лично (известен по общим беседам).
 class Contact {
-  final String device;
+  final String? device; // null — телефон этого человека ещё не известен
   final String name;
   final String? pub;
   final String? viaTripId; // беседа, через которую можно отправить приглашение в личный чат
@@ -632,6 +632,11 @@ class Repo extends ChangeNotifier {
       case 'msg':
         final m = _cols(d, ['id', 'trip_id', 'author_id', 'kind', 'text', 'ref_id', 'created', 'channel']);
         if (!await _isDeleted(tx, m['id'] as String)) await tx.insert('messages', m, conflictAlgorithm: ignore);
+        // Кто пишет текст, тот и владелец телефона: так узнаём телефон участника даже без «ident».
+        if (d['author_id'] != null && d['kind'] == MsgKind.text.index) {
+          await tx.rawUpdate('UPDATE members SET device = ? WHERE id = ? AND trip_id = ? AND device IS NULL',
+              [e.device, d['author_id'], e.tripId]);
+        }
       case 'wallet':
         await tx.insert('wallets', _cols(d, ['id', 'trip_id', 'name']), conflictAlgorithm: ignore);
       case 'member':
@@ -815,29 +820,48 @@ class Repo extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Все, кому можно написать лично: участники общих бесед с известным телефоном.
+  /// Все люди из общих бесед. Написать лично можно тем, чей телефон и ключ уже известны.
   Future<List<Contact>> contacts() async {
     final rows = await _db.rawQuery('''
       SELECT m.device, m.name, m.pub, m.id AS member_id, m.trip_id, t.kind
       FROM members m JOIN trips t ON t.id = m.trip_id
-      WHERE m.device IS NOT NULL AND m.device != ? AND m.is_me = 0
-      ORDER BY t.kind DESC, t.created DESC''', [deviceId]);
-    final byDev = <String, Contact>{};
+      WHERE m.is_me = 0 AND (m.device IS NULL OR m.device != ?)
+      ORDER BY t.kind DESC, (m.pub IS NULL), t.created DESC''', [deviceId]);
+    final byKey = <String, Contact>{};
     for (final r in rows) {
-      final dev = r['device'] as String;
-      final old = byDev[dev];
+      final dev = r['device'] as String?;
+      final name = r['name'] as String;
+      final key = dev ?? 'name:${name.trim().toLowerCase()}';
+      final old = byKey[key];
       final isDirect = r['kind'] == 1;
-      byDev[dev] = Contact(
+      byKey[key] = Contact(
         dev,
-        old?.name ?? r['name'] as String,
+        old?.name ?? name,
         old?.pub ?? r['pub'] as String?,
         old?.viaTripId ?? (isDirect ? null : r['trip_id'] as String),
         old?.viaMemberId ?? (isDirect ? null : r['member_id'] as String),
         old?.directTripId ?? (isDirect ? r['trip_id'] as String : null),
       );
     }
-    final list = byDev.values.toList()..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return list;
+    // Тот же человек без известного телефона — не показывать дважды.
+    final named = {for (final c in byKey.values) if (c.device != null) c.name.trim().toLowerCase()};
+    byKey.removeWhere((k, c) => c.device == null && named.contains(c.name.trim().toLowerCase()));
+    return byKey.values.toList()..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  }
+
+  /// Для записей, пришедших до 0.5.1: узнать телефоны участников по их сообщениям.
+  Future<void> learnDevices() async {
+    final r = await _db.query('events', columns: ['trip_id', 'device', 'data'], where: "type = 'msg'");
+    final batch = _db.batch();
+    for (final row in r) {
+      try {
+        final d = jsonDecode(row['data'] as String) as Map;
+        if (d['author_id'] == null || d['kind'] != MsgKind.text.index) continue;
+        batch.rawUpdate('UPDATE members SET device = ? WHERE id = ? AND trip_id = ? AND device IS NULL',
+            [row['device'], d['author_id'], row['trip_id']]);
+      } catch (_) {}
+    }
+    await batch.commit(noResult: true);
   }
 
   /// Личный чат с этим телефоном, если уже есть.

@@ -73,7 +73,11 @@ class _RoamlyAppState extends State<RoamlyApp> with WidgetsBindingObserver {
   /// Вернулись в приложение — сразу забрать новое с сервера.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) App.read(context).server.poke();
+    if (state == AppLifecycleState.resumed) {
+      final s = App.read(context);
+      s.server.poke();
+      s.direct.ensureIdent().catchError((_) => 0);
+    }
   }
 
   Future<void> _showIncoming() async {
